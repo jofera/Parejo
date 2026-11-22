@@ -4,23 +4,40 @@ import path from 'node:path';
 
 const COLORS = ['#0b8576', '#c9600a'];
 
+// Tareas de ejemplo, genéricas y habituales en cualquier hogar (cada hogar las adapta desde la app).
 // [emoji, nombre, minutos habituales, posición en pantalla]. Primero las tareas sueltas y luego
 // los grupos con sus subtareas (el orden de inserción solo afecta a los identificadores).
 const DEFAULT_TASKS = [
   ['🍳', 'Cocinar', 45, 0],
-  ['🍽️', 'Recoger la cocina', 15, 1],
-  ['🧹', 'Barrer o aspirar', 20, 3],
-  ['🧽', 'Limpiar el baño', 30, 4],
-  ['🛒', 'Compra', 60, 5],
-  ['🗑️', 'Basura y reciclaje', 10, 6],
-  ['🧼', 'Limpieza general', 30, 7],
-  ['👔', 'Planchar', 30, 8],
+  ['🧽', 'Recoger la cocina', 15, 1],
+  ['🧹', 'Pasar la aspiradora', 20, 4],
+  ['🚿', 'Limpiar el baño', 30, 5],
+  ['🗑️', 'Tirar la basura', 10, 7],
+  ['🛏️', 'Hacer la cama', 5, 8],
+  ['🧼', 'Limpieza general', 30, 6],
 ];
+// [emoji, nombre, posición en pantalla, [[emoji, nombre, minutos habituales], ...]]
 const DEFAULT_GROUPS = [
-  ['🧺', 'Colada', 2, [
-    ['🔘', 'Poner la lavadora', 5],
-    ['👕', 'Tender', 10],
-    ['🧦', 'Recoger y doblar la ropa', 20],
+  ['🍽️', 'Lavavajillas', 2, [
+    ['📥', 'Poner el lavavajillas', 5],
+    ['📤', 'Recoger el lavavajillas', 10],
+  ]],
+  ['👕', 'Ropa', 3, [
+    ['🧺', 'Poner la lavadora', 5],
+    ['🌬️', 'Tender la ropa', 10],
+    ['🧦', 'Recoger la ropa tendida', 10],
+    ['🗄️', 'Doblar y guardar la ropa', 20],
+    ['👔', 'Planchar', 30],
+  ]],
+  ['🛒', 'Compra', 9, [
+    ['🛍️', 'Hacer la compra', 60],
+    ['📦', 'Guardar la compra', 10],
+  ]],
+  ['🏡', 'Gestión del hogar', 10, [
+    ['📋', 'Planificar menús', 10],
+    ['🧾', 'Facturas y papeleo', 15],
+    ['📞', 'Llamar a técnicos y pedir citas', 15],
+    ['🏃', 'Recados', 30],
   ]],
 ];
 
