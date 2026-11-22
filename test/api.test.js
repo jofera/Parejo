@@ -166,6 +166,57 @@ test('ya no existen las notificaciones push ni el registro con horas', async () 
   assert.equal((await call('POST', '/api/entries', 1, { task: 1, start: clock - 3600_000, end: clock })).status, 404);
 });
 
+test('horas exactas y comentario opcional', async () => {
+  const ok = await call('POST', '/api/entries/quick', 1, { task: 1, from: '09:00', to: '09:45', note: '  Desayuno   tostadas ' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.entry.start, new Date(2026, 10, 11, 9, 0).getTime());
+  assert.equal(ok.data.entry.end, new Date(2026, 10, 11, 9, 45).getTime());
+  assert.equal(ok.data.entry.note, 'Desayuno tostadas');
+  assert.equal(ok.data.entry.timed, true);
+
+  // otro día, con horas
+  const prev = await call('POST', '/api/entries/quick', 1, { task: 1, day: '2026-11-10', from: '21:00', to: '21:30' });
+  assert.equal(prev.status, 200);
+  assert.equal(prev.data.entry.start, new Date(2026, 10, 10, 21, 0).getTime());
+
+  // validaciones
+  assert.equal((await call('POST', '/api/entries/quick', 1, { task: 1, from: '10:00' })).status, 400); // falta fin
+  assert.equal((await call('POST', '/api/entries/quick', 1, { task: 1, from: '10:30', to: '10:00' })).status, 400);
+  assert.equal((await call('POST', '/api/entries/quick', 1, { task: 1, from: '23:00', to: '23:30' })).status, 400); // futuro
+  assert.equal((await call('POST', '/api/entries/quick', 1, { task: 1, from: '25:00', to: '26:00' })).status, 400);
+  assert.equal((await call('POST', '/api/entries/quick', 1, { task: 1, day: '2026-11-10', from: '06:00', to: '19:00' })).status, 400); // más de 12 h
+});
+
+test('comentario en registro por duración y sugerencias', async () => {
+  const { data } = await call('POST', '/api/entries/quick', 1, { task: 1, minutes: 20, note: 'Cena' });
+  assert.equal(data.entry.note, 'Cena');
+  assert.equal(data.entry.timed, false);
+  await call('POST', '/api/entries/quick', 1, { task: 1, minutes: 20, note: 'Cena' });
+  const { data: boot } = await call('GET', '/api/bootstrap', 1);
+  assert.equal(boot.notes[1][0], 'Cena');
+  assert.deepEqual((await call('GET', '/api/bootstrap', 2)).data.notes[1] ?? [], []); // solo las tuyas
+});
+
+test('editar horas y comentario deja historial', async () => {
+  const { data: c } = await call('POST', '/api/entries/quick', 2, { task: 4, minutes: 30 });
+  const id = c.entry.id;
+  clock += 3 * 60_000;
+  const ok = await call('PATCH', `/api/entries/${id}`, 2, { from: '10:00', to: '10:40', note: 'Baño pequeño', reason: 'Añado horas' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.entry.timed, true);
+  assert.equal(ok.data.entry.end - ok.data.entry.start, 40 * 60000);
+  assert.equal(ok.data.entry.note, 'Baño pequeño');
+  const { data: hist } = await call('GET', `/api/entries/${id}/edits`, 1);
+  assert.deepEqual(hist.edits[0].changes.time, { from: null, to: '10:00–10:40' });
+  assert.deepEqual(hist.edits[0].changes.note, { from: null, to: 'Baño pequeño' });
+  assert.equal((await call('PATCH', `/api/entries/${id}`, 2, { from: '10:00', reason: 'solo inicio' })).status, 400);
+  assert.equal((await call('PATCH', `/api/entries/${id}`, 2, { from: '10:00', to: '10:40', note: 'Baño pequeño', reason: 'igual' })).status, 400);
+  clock += 60_000; // el historial se ordena por instante: que las dos ediciones no coincidan
+  const second = await call('PATCH', `/api/entries/${id}`, 2, { to: '10:50', from: '10:00', reason: 'Terminé más tarde' });
+  assert.deepEqual((await call('GET', `/api/entries/${id}/edits`, 2)).data.edits[0].changes.time, { from: '10:00–10:40', to: '10:00–10:50' });
+  assert.equal(second.data.entry.end - second.data.entry.start, 50 * 60000);
+});
+
 test('bloquea rutas fuera de public', async () => {
   const res = await fetch(base + '/%2e%2e/package.json');
   assert.ok([403, 404].includes(res.status));

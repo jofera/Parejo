@@ -32,7 +32,7 @@ const store = {
 const S = {
   me: Number(store.get('me')) || null,
   tab: 'home',
-  users: [], tasks: [], active: [], settings: {}, week: null, today: [], order: null,
+  users: [], tasks: [], notes: {}, active: [], settings: {}, week: null, today: [], order: null,
   skew: 0, histKind: 'week', histOpen: null, rankPeriod: 'week', renderToken: 0,
 };
 
@@ -122,6 +122,7 @@ async function refresh() {
   S.skew = b.now - Date.now();
   S.users = b.users;
   S.active = b.active;
+  S.notes = b.notes || {};
   S.settings = b.settings;
   if (!S.order) S.order = b.tasks.map((t) => t.id); // el orden por uso solo cambia al abrir la app
   const pos = (t) => { const i = S.order.indexOf(t.id); return i < 0 ? 1e9 + t.id : i; };
@@ -166,7 +167,7 @@ function entryRow(e, { showUser = true } = {}) {
     h('span', { class: 'em' }, t.emoji),
     h('span', { class: 'main' },
       h('b', null, t.name),
-      h('span', null, [showUser ? u.name : '', e.edits ? 'editado' : ''].filter(Boolean).join(' · ') || '\u00a0')),
+      h('span', null, [showUser ? u.name : '', e.timed ? `${timeStr(e.start)}–${timeStr(e.end)}` : '', e.note ? `“${e.note}”` : '', e.edits ? 'editado' : ''].filter(Boolean).join(' · ') || '\u00a0')),
     h('span', { class: 'dur' }, fmtDur(e.end - e.start)),
     mine && h('span', { class: 'edit', 'aria-hidden': 'true' }, '✎'),
   ];
@@ -184,22 +185,27 @@ function minLabel(m) {
 
 const dayText = (day) => dayLabel(parseLocal(day, '12:00')).toLowerCase();
 
-async function quickLog(t, minutes, day) {
+// `opts`: { note, from, to } (horas 'HH:MM'; si hay horas, `minutes` no se usa).
+async function quickLog(t, minutes, day, opts = {}) {
   try {
-    const { entry } = await api('/api/entries/quick', { method: 'POST', body: { task: t.id, minutes, day } });
+    const body = { task: t.id, day };
+    if (opts.from && opts.to) { body.from = opts.from; body.to = opts.to; } else body.minutes = minutes;
+    if (opts.note) body.note = opts.note;
+    const { entry } = await api('/api/entries/quick', { method: 'POST', body });
+    minutes = Math.round((entry.end - entry.start) / 60000);
     buzz();
     await refresh(); await render();
     const when = day && day !== dateStr(serverNow()) ? ` · ${dayText(day)}` : '';
-    toast(`✓ ${t.emoji} ${t.name} · ${fmtDur(minutes * 60000)}${when}`, {
+    toast(`✓ ${t.emoji} ${t.name}${entry.note ? ` (${entry.note})` : ''} · ${fmtDur(minutes * 60000)}${when}`, {
       label: 'Deshacer',
       fn: () => api(`/api/entries/${entry.id}/undo`, { method: 'POST' }).then(reload).catch(fail),
     });
   } catch (e) { fail(e); }
 }
 
-async function startTimer(t) {
+async function startTimer(t, note) {
   try {
-    const r = await api('/api/timer/start', { method: 'POST', body: { task: t.id } });
+    const r = await api('/api/timer/start', { method: 'POST', body: { task: t.id, note } });
     buzz();
     await refresh(); await render();
     toast(r.stopped?.entry ? `Cronómetro de ${t.emoji} ${t.name} en marcha. Guardé la tarea anterior.` : `Cronómetro de ${t.emoji} ${t.name} en marcha`);
@@ -228,7 +234,7 @@ function taskSheet(t) {
     const err = h('p', { class: 'err' });
     const dateIn = h('input', { type: 'date', value: yesterday, max: today, 'aria-label': 'Día', onchange: () => pick('otro') });
     const dateWrap = h('div', { hidden: true }, dateIn);
-    const timerBtn = h('button', { class: 'btn', onclick: () => { close(); startTimer(t); } }, '▶  Empezar cronómetro');
+    const timerBtn = h('button', { class: 'btn', onclick: () => { close(); startTimer(t, note.value); } }, '▶  Empezar cronómetro');
     const chips = {};
     const pick = (mode) => {
       day = mode === 'hoy' ? today : mode === 'ayer' ? yesterday : (dateIn.value || yesterday);
@@ -240,6 +246,24 @@ function taskSheet(t) {
       chips[k] = h('button', { class: 'chip', 'aria-pressed': String(k === 'hoy'), onclick: () => pick(k) }, label);
     }
 
+    // Comentario opcional + horas exactas, ocultos tras «Más detalles» para que lo normal siga siendo dos toques.
+    const note = h('input', { type: 'text', maxlength: '200', autocomplete: 'off', placeholder: 'Comentario (opcional): p. ej. cena, lasaña…', 'aria-label': 'Comentario' });
+    const suggestions = (S.notes[t.id] || []).map((n) => h('button', { class: 'chip', onclick: () => { note.value = n; } }, n));
+    const from = h('input', { type: 'time', 'aria-label': 'Hora de inicio' });
+    const to = h('input', { type: 'time', 'aria-label': 'Hora de fin' });
+    const saveTimes = () => {
+      if (!from.value || !to.value) { err.textContent = 'Indica la hora de inicio y la de fin.'; return; }
+      if (to.value <= from.value) { err.textContent = 'La hora de fin debe ser posterior a la de inicio.'; return; }
+      close(); quickLog(t, 0, day, { note: note.value, from: from.value, to: to.value });
+    };
+    const details = h('details', { class: 'more' },
+      h('summary', null, 'Más detalles: comentario y horas'),
+      h('div', { class: 'form', style: 'margin-top:10px' },
+        h('label', null, 'Comentario', note),
+        suggestions.length ? h('div', { class: 'chips' }, suggestions) : null,
+        h('div', { class: 'two' }, h('label', null, 'Empecé a las', from), h('label', null, 'Terminé a las', to)),
+        h('button', { class: 'btn ghost', onclick: saveTimes }, 'Guardar con estas horas')));
+
     const custom = h('input', {
       type: 'number', inputmode: 'numeric', min: '1', max: '720', placeholder: 'Otra duración (minutos)', 'aria-label': 'Otra duración en minutos',
       onkeydown: (ev) => { if (ev.key === 'Enter') saveCustom(); },
@@ -247,7 +271,7 @@ function taskSheet(t) {
     const saveCustom = () => {
       const m = Math.round(Number(custom.value));
       if (!(m >= 1)) { err.textContent = 'Escribe cuántos minutos has tardado.'; return; }
-      close(); quickLog(t, m, day);
+      close(); quickLog(t, m, day, { note: note.value });
     };
 
     return [
@@ -257,12 +281,13 @@ function taskSheet(t) {
       h('h3', null, '¿Cuánto has tardado?'),
       h('div', { class: 'mins' }, mins.map((m) => {
         const [big, small] = minLabel(m);
-        return h('button', { class: m === t.default_min ? 'habit' : '', onclick: () => { close(); quickLog(t, m, day); } },
+        return h('button', { class: m === t.default_min ? 'habit' : '', onclick: () => { close(); quickLog(t, m, day, { note: note.value }); } },
           big, small && ` ${small}`, m === t.default_min && h('small', null, 'habitual'));
       })),
       h('div', { class: 'two', style: 'grid-template-columns:1fr auto;margin-top:10px' },
         custom, h('button', { class: 'btn ghost', style: 'width:auto;padding:0 20px', onclick: saveCustom }, 'Guardar')),
       err,
+      details,
       h('div', { class: 'stack' }, timerBtn),
     ];
   });
@@ -273,10 +298,12 @@ function taskSelect(selectedId) {
     h('option', { value: t.id, selected: t.id === selectedId }, `${t.emoji} ${t.name}`)));
 }
 
-const REASONS = ['Me equivoqué de tarea', 'Duración incorrecta', 'Día incorrecto', 'Se me olvidó parar'];
+const REASONS = ['Me equivoqué de tarea', 'Duración incorrecta', 'Día incorrecto', 'Se me olvidó parar', 'Añadir comentario'];
 const changeText = (key, c) => {
   if (key === 'task') return `Tarea: ${task(c.from).name} → ${task(c.to).name}`;
   if (key === 'minutes') return `Duración: ${fmtDur(c.from * 60000)} → ${fmtDur(c.to * 60000)}`;
+  if (key === 'note') return `Comentario: ${c.from ? `“${c.from}”` : '(vacío)'} → ${c.to ? `“${c.to}”` : '(vacío)'}`;
+  if (key === 'time') return `Horas: ${c.from || 'sin horas'} → ${c.to}`;
   if (key === 'day') return `Día: ${dayText(c.from)} → ${dayText(c.to)}`;
   if (key === 'start') return `Inicio: ${dayLabel(c.from)} ${timeStr(c.from)} → ${dayLabel(c.to)} ${timeStr(c.to)}`; // registros antiguos
   if (key === 'end') return `Fin: ${timeStr(c.from)} → ${timeStr(c.to)}`; // registros antiguos
@@ -291,6 +318,11 @@ function editSheet(e) {
     const sel = taskSelect(e.task_id);
     const mins = h('input', { type: 'number', inputmode: 'numeric', min: '1', max: '720', value: curMin });
     const date = h('input', { type: 'date', value: curDay, max: dateStr(serverNow()) });
+    const noteIn = h('input', { type: 'text', maxlength: '200', autocomplete: 'off', value: e.note || '', placeholder: 'Comentario (opcional)' });
+    const curFrom = e.timed ? timeStr(e.start) : '';
+    const curTo = e.timed ? timeStr(e.end) : '';
+    const fromIn = h('input', { type: 'time', value: curFrom, 'aria-label': 'Hora de inicio' });
+    const toIn = h('input', { type: 'time', value: curTo, 'aria-label': 'Hora de fin' });
     const reason = h('input', { type: 'text', placeholder: 'Motivo del cambio', maxlength: '300', autocomplete: 'off' });
     const history = h('div');
     let confirmDelete = false;
@@ -314,14 +346,21 @@ function editSheet(e) {
       h('p', { class: 'hint' }, 'Los cambios quedan anotados con su motivo.'),
       h('div', { class: 'form', style: 'margin-top:12px' },
         h('label', null, 'Tarea', sel),
+        h('label', null, 'Comentario', noteIn),
         h('div', { class: 'two' }, h('label', null, 'Duración (minutos)', mins), h('label', null, 'Día', date)),
+        h('div', { class: 'two' }, h('label', null, 'Inicio', fromIn), h('label', null, 'Fin', toIn)),
+        h('p', { class: 'hint' }, 'Si indicas las horas, mandan sobre la duración.'),
         h('div', { class: 'chips' }, REASONS.map((r) => h('button', { class: 'chip', onclick: () => { reason.value = r; } }, r))),
         h('label', null, '¿Por qué lo cambias?', reason),
         err,
         h('button', { class: 'btn', onclick: async (ev) => {
           const body = { reason: reason.value };
           if (Number(sel.value) !== e.task_id) body.task = Number(sel.value);
-          if (Math.round(Number(mins.value)) !== curMin) body.minutes = Number(mins.value);
+          if (noteIn.value.trim() !== (e.note || '')) body.note = noteIn.value;
+          if (fromIn.value !== curFrom || toIn.value !== curTo) {
+            if (!fromIn.value || !toIn.value) { err.textContent = 'Indica la hora de inicio y la de fin, o deja las dos vacías.'; return; }
+            body.from = fromIn.value; body.to = toIn.value;
+          } else if (Math.round(Number(mins.value)) !== curMin) body.minutes = Number(mins.value);
           if (date.value && date.value !== curDay) body.day = date.value;
           const btn = ev.currentTarget;
           btn.disabled = true;

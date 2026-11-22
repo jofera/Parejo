@@ -182,3 +182,10 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 3px s
 .welcome { min-height: 80vh; display: grid; align-content: center; gap: 18px; text-align: center; }
 .welcome h1 { font-size: 1.8rem; }
 .welcome .who-btn { padding: 26px; border-radius: 20px; font-size: 1.5rem; font-weight: 700; color: #fff; }
+
+/* Más detalles (comentario y horas) */
+details.more { margin-top: 14px; }
+details.more > summary { cursor: pointer; font-weight: 600; color: var(--muted, #5b6b68); padding: 10px 2px; list-style: none; }
+details.more > summary::-webkit-details-marker { display: none; }
+details.more > summary::before { content: '＋ '; }
+details.more[open] > summary::before { content: '－ '; }

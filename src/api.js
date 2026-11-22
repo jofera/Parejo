@@ -18,9 +18,10 @@ const notFound = (m) => new HttpError(404, m);
 
 // Devuelve un manejador async (req, url, body) -> objeto JSON, o undefined si la ruta no existe.
 //
-// Modelo: cada registro guarda inicio y fin, pero la app solo trabaja con la duración y el día.
-// Los registros "de otro día" se colocan a mediodía de ese día; el cronómetro y el registro de
-// hoy terminan en el instante en que se guardan.
+// Modelo: cada registro guarda inicio y fin. Solo son horas reales (`timed`) si salen del
+// cronómetro o si la persona las ha escrito; en el registro por duración, los registros "de otro
+// día" se colocan a mediodía de ese día y los de hoy terminan en el instante en que se guardan.
+// Cada registro puede llevar un comentario opcional (`note`).
 export function createApi({ db, now = () => Date.now() }) {
   const get = (sql, ...p) => db.prepare(sql).get(...p);
   const all = (sql, ...p) => db.prepare(sql).all(...p);
@@ -34,6 +35,7 @@ export function createApi({ db, now = () => Date.now() }) {
     start: e.start_ts,
     end: e.end_ts,
     note: e.note,
+    timed: e.source === 'timer' || e.source === 'times',
     source: e.source,
     edits: e.edits ?? 0,
   });
@@ -56,8 +58,27 @@ export function createApi({ db, now = () => Date.now() }) {
     if (m > MAX_MINUTES) throw bad('Una tarea no puede durar más de 12 horas.');
     return m;
   };
+  const hm = (ms) => {
+    const d = new Date(ms);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  // Hora local 'HH:MM' de un día 'AAAA-MM-DD' -> milisegundos.
+  function atTime(day, hhmm) {
+    const noon = noonOf(day);
+    if (noon == null) throw bad('Día no válido');
+    const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(hhmm ?? ''));
+    if (!m) throw bad('Hora no válida (usa HH:MM).');
+    const d = new Date(noon);
+    d.setHours(Number(m[1]), Number(m[2]), 0, 0);
+    return d.getTime();
+  }
+  const noteOf = (v) => {
+    const n = String(v ?? '').trim().replace(/\s+/g, ' ').slice(0, 200);
+    return n || null;
+  };
   function checkRange(start, end) {
-    if (end <= start) throw bad('La duración no es válida.');
+    if (end <= start) throw bad('La hora de fin debe ser posterior a la de inicio.');
+    if (end - start > MAX_MINUTES * MIN) throw bad('Una tarea no puede durar más de 12 horas.');
     if (end > now() + 5 * MIN) throw bad('No se puede apuntar en el futuro.');
     if (now() - start > MAX_AGE_MS) throw bad('Ese día es demasiado antiguo.');
   }
@@ -110,10 +131,22 @@ export function createApi({ db, now = () => Date.now() }) {
          FROM tasks t ORDER BY uses DESC, t.sort, t.id`,
       u.id, since,
     ).map((t) => ({ id: t.id, name: t.name, emoji: t.emoji, default_min: t.default_min, archived: !!t.archived }));
+    // Comentarios más usados por esta persona en cada tarea (para sugerirlos con un toque).
+    const notes = {};
+    for (const r of all(
+      `SELECT task_id, note, COUNT(*) AS c FROM entries
+        WHERE user_id = ? AND deleted = 0 AND note IS NOT NULL AND note <> '' AND start_ts > ?
+        GROUP BY task_id, note ORDER BY c DESC, MAX(start_ts) DESC`,
+      u.id, since,
+    )) {
+      const list = (notes[r.task_id] ??= []);
+      if (list.length < 6) list.push(r.note);
+    }
     return {
       now: now(),
       users: users(),
       tasks,
+      notes,
       active: all(`${ENTRY_SQL} WHERE end_ts IS NULL AND deleted = 0`).map(entryOut),
       settings: { balanced: BALANCED },
     };
@@ -219,7 +252,7 @@ export function createApi({ db, now = () => Date.now() }) {
   });
 
   // ---- Registro de tiempo --------------------------------------------------------------------
-  function stopActive(userId) {
+  function stopActive(userId, note) {
     const a = activeOf(userId);
     if (!a) return null;
     const t = now();
@@ -227,7 +260,8 @@ export function createApi({ db, now = () => Date.now() }) {
       run('DELETE FROM entries WHERE id = ?', a.id); // arranque accidental: no se guarda
       return { discarded: true };
     }
-    run('UPDATE entries SET end_ts = ? WHERE id = ?', t, a.id);
+    if (note !== undefined && noteOf(note)) run('UPDATE entries SET end_ts = ?, note = ? WHERE id = ?', t, noteOf(note), a.id);
+    else run('UPDATE entries SET end_ts = ? WHERE id = ?', t, a.id);
     return { entry: entryOut(get(`${ENTRY_SQL} WHERE id = ?`, a.id)) };
   }
 
@@ -237,42 +271,55 @@ export function createApi({ db, now = () => Date.now() }) {
     const stopped = stopActive(u.id);
     const t = now();
     const r = run(
-      `INSERT INTO entries (user_id, task_id, start_ts, source, created_at) VALUES (?, ?, ?, 'timer', ?)`,
-      u.id, task.id, t, t,
+      `INSERT INTO entries (user_id, task_id, start_ts, note, source, created_at) VALUES (?, ?, ?, ?, 'timer', ?)`,
+      u.id, task.id, t, noteOf(body.note), t,
     );
     return { entry: entryOut(get(`${ENTRY_SQL} WHERE id = ?`, r.lastInsertRowid)), stopped };
   });
 
-  route('POST', '/api/timer/stop', (req) => {
+  route('POST', '/api/timer/stop', (req, _q, body) => {
     const u = me(req);
-    const res = stopActive(u.id);
+    const res = stopActive(u.id, body?.note);
     if (!res) throw bad('No tienes ningún cronómetro en marcha.');
     return res;
   });
 
-  // Apunta una tarea por duración. `day` ('AAAA-MM-DD') es opcional: sin él, o con el de hoy,
-  // el registro termina ahora; con otro día, se coloca a mediodía de ese día.
+  // Apunta una tarea. Dos formas:
+  //  - por duración: `minutes` (y `day` opcional: sin él, o con el de hoy, termina ahora; con otro
+  //    día se coloca a mediodía de ese día);
+  //  - con horas: `from` y `to` ('HH:MM') en el día `day` (hoy por defecto).
+  // `note` es un comentario opcional.
   route('POST', '/api/entries/quick', (req, _q, body) => {
     const u = me(req);
     const task = taskById(body.task);
-    const minutes = minutesOf(body.minutes);
+    const note = noteOf(body.note);
     const t = now();
     let start;
     let end;
-    if (body.day && body.day !== dayStr(t)) {
-      const noon = noonOf(body.day);
-      if (noon == null) throw bad('Día no válido');
-      if (noon > t) throw bad('No se puede apuntar en el futuro.');
-      start = noon;
-      end = noon + minutes * MIN;
+    let source = 'quick';
+    if (body.from || body.to) {
+      if (!body.from || !body.to) throw bad('Indica la hora de inicio y la de fin.');
+      const day = body.day || dayStr(t);
+      start = atTime(day, body.from);
+      end = atTime(day, body.to);
+      source = 'times';
     } else {
-      end = t;
-      start = end - minutes * MIN;
+      const minutes = minutesOf(body.minutes);
+      if (body.day && body.day !== dayStr(t)) {
+        const noon = noonOf(body.day);
+        if (noon == null) throw bad('Día no válido');
+        if (noon > t) throw bad('No se puede apuntar en el futuro.');
+        start = noon;
+        end = noon + minutes * MIN;
+      } else {
+        end = t;
+        start = end - minutes * MIN;
+      }
     }
     checkRange(start, end);
     const r = run(
-      `INSERT INTO entries (user_id, task_id, start_ts, end_ts, source, created_at) VALUES (?, ?, ?, ?, 'quick', ?)`,
-      u.id, task.id, start, end, t,
+      `INSERT INTO entries (user_id, task_id, start_ts, end_ts, note, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      u.id, task.id, start, end, note, source, t,
     );
     return { entry: entryOut(get(`${ENTRY_SQL} WHERE id = ?`, r.lastInsertRowid)) };
   });
@@ -298,7 +345,8 @@ export function createApi({ db, now = () => Date.now() }) {
     return { ok: true };
   });
 
-  // Corregir un registro: tarea, duración (minutes) y/o día (day). El motivo es obligatorio.
+  // Corregir un registro: tarea, comentario (note), duración (minutes), día (day) y/o horas
+  // (from y to, 'HH:MM'). El motivo es obligatorio.
   route('PATCH', '/api/entries/(\\d+)', (req, _q, body, m) => {
     const u = me(req);
     const e = ownEntry(u, m[1]);
@@ -307,8 +355,11 @@ export function createApi({ db, now = () => Date.now() }) {
 
     const curMin = Math.round((e.end_ts - e.start_ts) / MIN);
     const curDay = dayStr(e.start_ts);
+    const wasTimed = e.source === 'timer' || e.source === 'times';
     const changes = {};
     let taskId = e.task_id;
+    let note = e.note;
+    let source = e.source;
     let start = e.start_ts;
     let duration = e.end_ts - e.start_ts;
 
@@ -316,27 +367,51 @@ export function createApi({ db, now = () => Date.now() }) {
       taskId = taskById(body.task).id;
       changes.task = { from: e.task_id, to: taskId };
     }
-    if (body.minutes !== undefined) {
-      const newMin = minutesOf(body.minutes);
-      if (newMin !== curMin) {
-        duration = newMin * MIN;
-        changes.minutes = { from: curMin, to: newMin };
+    if (body.note !== undefined) {
+      const n = noteOf(body.note);
+      if (n !== (e.note || null)) {
+        note = n;
+        changes.note = { from: e.note || null, to: n };
       }
     }
-    if (body.day !== undefined && body.day !== curDay) {
-      const noon = noonOf(body.day);
-      if (noon == null) throw bad('Día no válido');
-      const d = new Date(e.start_ts); // se conserva la hora del registro, solo cambia el día
-      const nd = new Date(noon);
-      d.setFullYear(nd.getFullYear(), nd.getMonth(), nd.getDate());
-      start = d.getTime();
-      changes.day = { from: curDay, to: body.day };
+
+    if (body.from !== undefined || body.to !== undefined) {
+      // Con horas: mandan sobre la duración.
+      if (!body.from || !body.to) throw bad('Indica la hora de inicio y la de fin.');
+      const day = body.day || curDay;
+      const s = atTime(day, body.from);
+      const en = atTime(day, body.to);
+      if (en <= s) throw bad('La hora de fin debe ser posterior a la de inicio.');
+      const before = wasTimed ? `${hm(e.start_ts)}–${hm(e.end_ts)}` : null;
+      const after = `${body.from}–${body.to}`;
+      if (before !== after) changes.time = { from: before, to: after };
+      if (day !== curDay) changes.day = { from: curDay, to: day };
+      start = s;
+      duration = en - s;
+      source = 'times';
+    } else {
+      if (body.minutes !== undefined) {
+        const newMin = minutesOf(body.minutes);
+        if (newMin !== curMin) {
+          duration = newMin * MIN;
+          changes.minutes = { from: curMin, to: newMin };
+        }
+      }
+      if (body.day !== undefined && body.day !== curDay) {
+        const noon = noonOf(body.day);
+        if (noon == null) throw bad('Día no válido');
+        const d = new Date(e.start_ts); // se conserva la hora del registro, solo cambia el día
+        const nd = new Date(noon);
+        d.setFullYear(nd.getFullYear(), nd.getMonth(), nd.getDate());
+        start = d.getTime();
+        changes.day = { from: curDay, to: body.day };
+      }
     }
     if (!Object.keys(changes).length) throw bad('No has cambiado nada.');
 
     const end = start + duration;
     checkRange(start, end);
-    run('UPDATE entries SET task_id = ?, start_ts = ?, end_ts = ? WHERE id = ?', taskId, start, end, e.id);
+    run('UPDATE entries SET task_id = ?, note = ?, source = ?, start_ts = ?, end_ts = ? WHERE id = ?', taskId, note, source, start, end, e.id);
     run('INSERT INTO entry_edits (entry_id, user_id, at, changes, reason) VALUES (?, ?, ?, ?, ?)', e.id, u.id, now(), JSON.stringify(changes), reason);
     return { entry: entryOut(get(`${ENTRY_SQL} WHERE id = ?`, e.id)) };
   });
