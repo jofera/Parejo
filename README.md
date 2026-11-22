@@ -84,8 +84,71 @@ Los datos están en `reparto.db` (SQLite). **Copia de seguridad = copiar esa car
 
 Los navegadores solo permiten *service workers* (lo que hace que una web abra sin red) en páginas HTTPS o en `localhost`. Por `http://IP-DEL-SERVIDOR:3000` la app funciona y guarda en el móvil lo que apuntes si se pierde la conexión, pero **no puede abrirse sin conexión** (y Chrome no la ofrecerá como app instalada). Para eso, sírvela por HTTPS detrás de un proxy inverso con un certificado de confianza:
 
-- Con un dominio propio cuyo DNS tenga API: un subdominio apuntando a la IP privada del servidor y un proxy (Caddy, Nginx Proxy Manager…) que obtenga el certificado con el reto DNS de Let's Encrypt. No hace falta abrir puertos ni instalar nada en los móviles.
+- Con un dominio propio cuyo DNS tenga API: un subdominio apuntando a la IP privada del servidor y un proxy (Caddy, Nginx Proxy Manager…) que obtenga el certificado con el reto DNS de Let's Encrypt. No hace falta abrir puertos ni instalar nada en los móviles. Hay una receta más abajo.
 - Con [Tailscale](https://tailscale.com/kb/1153/enabling-https/): certificado de confianza para el nombre `*.ts.net` y, además, acceso desde fuera de casa sin abrir puertos.
+
+### Receta: Caddy + BIND propio (reto DNS por RFC 2136)
+
+Sirve si gestionas tu propio servidor DNS con BIND. Ejemplo con `casa.example.com`; sustituye dominio e IPs por los tuyos. Probado con Caddy 2 y BIND 9.20; no depende de Parejo, que sigue sirviéndose por `http` detrás del proxy.
+
+1. **DNS.** En la zona de tu dominio:
+
+   ```
+   casa                  A      192.168.x.x                       ; IP privada del servidor
+   acme-dns              NS     ns.example.com.                   ; delegación de una subzona solo para el reto
+   _acme-challenge.casa  CNAME  casa.acme-dns.example.com.
+   ```
+
+2. **BIND.** Genera una clave (`tsig-keygen -a hmac-sha256 caddy-key`, o `openssl rand -base64 32` para el secreto) y declara una subzona **fuera de lo que gestione tu panel** (así no se pisan las actualizaciones dinámicas con el fichero de zona). En `named.conf.local`:
+
+   ```
+   key "caddy-key" { algorithm hmac-sha256; secret "BASE64"; };
+
+   zone "acme-dns.example.com" {
+       type master;
+       file "/var/lib/bind/acme-dns.example.com.db";
+       update-policy { grant caddy-key name casa.acme-dns.example.com. TXT; };
+   };
+   ```
+
+   La política solo deja a esa clave escribir TXT en ese nombre. El fichero de zona lleva únicamente `SOA` y `NS`. Valida con `named-checkconf` y `named-checkzone`, y recarga con `rndc reload`.
+
+3. **Caddy con el plugin.** La imagen oficial no lo trae:
+
+   ```dockerfile
+   FROM caddy:builder AS b
+   RUN xcaddy build --with github.com/caddy-dns/rfc2136
+   FROM caddy:latest
+   COPY --from=b /usr/bin/caddy /usr/bin/caddy
+   ```
+
+   ```
+   {
+       https_port 8443
+       auto_https disable_redirects
+   }
+
+   casa.example.com {
+       tls {
+           dns rfc2136 {
+               key_name "caddy-key"
+               key_alg "hmac-sha256"
+               key "{env.TSIG_KEY}"
+               server "IP-DEL-BIND:53"
+           }
+           dns_challenge_override_domain casa.acme-dns.example.com
+           resolvers IP-DEL-BIND
+           propagation_delay 5s
+       }
+       reverse_proxy IP-PRIVADA:3000
+   }
+   ```
+
+   Pasa el secreto como variable de entorno (`TSIG_KEY`), no lo guardes en el repositorio. El puerto 8443 evita chocar con el 80 y el 443 si el servidor ya los usa (por ejemplo, DSM en Synology). Persiste `/data` de Caddy en un volumen para conservar certificados y cuenta.
+
+4. **Comprobar.** Abre `https://casa.example.com:8443` en el móvil, en la consola `window.isSecureContext` debe dar `true`, y el service worker debe aparecer registrado. Instala la app **desde esa URL**: una app instalada queda ligada a su origen, y cambiar de URL obliga a reinstalar y a elegir de nuevo el nombre. Si el nombre no resuelve en casa, revisa la protección contra *DNS rebinding* del router.
+
+Fuera de casa, la IP privada solo se alcanza con una VPN. Sin ella, la app instalada sigue abriendo y guarda lo que apuntes para enviarlo al volver.
 
 La sincronización en segundo plano con la app cerrada no está disponible en Safari ni Firefox, así que lo pendiente se envía al abrir la app o al recuperar la conexión.
 
