@@ -1,0 +1,40 @@
+# Tarjeta para un panel de Home Assistant: editar panel → añadir tarjeta → Manual → pegar esto.
+type: vertical-stack
+cards:
+  - type: markdown
+    title: Parejo · esta semana
+    content: "{{ states('sensor.reparto_mensaje_semana') }}"
+  - type: horizontal-stack
+    cards:
+      - type: gauge
+        entity: sensor.reparto_persona_1_porcentaje
+        name: Persona 1
+        min: 0
+        max: 100
+        needle: true
+        segments:
+          - { from: 0, color: "#e8a33d" }
+          - { from: 40, color: "#43a047" }
+          - { from: 60, color: "#e8a33d" }
+      - type: gauge
+        entity: sensor.reparto_persona_2_porcentaje
+        name: Persona 2
+        min: 0
+        max: 100
+        needle: true
+        segments:
+          - { from: 0, color: "#e8a33d" }
+          - { from: 40, color: "#43a047" }
+          - { from: 60, color: "#e8a33d" }
+  - type: entities
+    entities:
+      - entity: sensor.reparto_persona_1_semana
+        name: Persona 1, esta semana
+      - entity: sensor.reparto_persona_2_semana
+        name: Persona 2, esta semana
+      - entity: sensor.reparto_persona_1_hoy
+        name: Persona 1, hoy
+      - entity: sensor.reparto_persona_2_hoy
+        name: Persona 2, hoy
+      - entity: binary_sensor.reparto_equilibrado
+        name: ¿Equilibrado?

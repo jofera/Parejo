@@ -1,0 +1,12 @@
+{
+  "name": "parejo",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Registro de tiempo de tareas del hogar para dos personas, con balance semanal y ranking.",
+  "type": "module",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\""
+  },
+  "engines": { "node": ">=22.13" }
+}

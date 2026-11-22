@@ -1,0 +1,13 @@
+services:
+  reparto:
+    build: .
+    container_name: parejo
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      TZ: Europe/Madrid
+      # Nombres de las dos personas (solo se usan la primera vez que arranca).
+      USERS: "Persona 1,Persona 2"
+    volumes:
+      - ./data:/data

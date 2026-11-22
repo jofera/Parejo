@@ -1,0 +1,119 @@
+# Parejo para Home Assistant.
+# Copia este archivo a <config>/packages/reparto.yaml (ver README.md de esta carpeta)
+# y cambia IP-DEL-NAS por la IP de tu NAS.
+#
+# Requiere Home Assistant 2024.10 o superior.
+
+# ---- Sensores: el balance de la semana --------------------------------------------------------
+rest:
+  - resource: http://IP-DEL-NAS:3000/api/ha
+    scan_interval: 60
+    sensor:
+      # Si cambias los nombres de las personas en la app, cambia también estos nombres.
+      - name: "Reparto Persona 1 semana"
+        unique_id: reparto_persona_1_semana
+        value_template: "{{ value_json.week.people[0].minutes }}"
+        unit_of_measurement: "min"
+        device_class: duration
+      - name: "Reparto Persona 2 semana"
+        unique_id: reparto_persona_2_semana
+        value_template: "{{ value_json.week.people[1].minutes }}"
+        unit_of_measurement: "min"
+        device_class: duration
+      - name: "Reparto Persona 1 porcentaje"
+        unique_id: reparto_persona_1_porcentaje
+        value_template: "{{ value_json.week.people[0].percent }}"
+        unit_of_measurement: "%"
+      - name: "Reparto Persona 2 porcentaje"
+        unique_id: reparto_persona_2_porcentaje
+        value_template: "{{ value_json.week.people[1].percent }}"
+        unit_of_measurement: "%"
+      # Positivo: Persona 1 va por delante. Negativo: va por delante la otra persona.
+      - name: "Reparto diferencia semana"
+        unique_id: reparto_diferencia_semana
+        value_template: "{{ value_json.week.diff_minutes }}"
+        unit_of_measurement: "min"
+      - name: "Reparto Persona 1 hoy"
+        unique_id: reparto_persona_1_hoy
+        value_template: "{{ value_json.today.people[0].minutes }}"
+        unit_of_measurement: "min"
+        device_class: duration
+      - name: "Reparto Persona 2 hoy"
+        unique_id: reparto_persona_2_hoy
+        value_template: "{{ value_json.today.people[1].minutes }}"
+        unit_of_measurement: "min"
+        device_class: duration
+      # Texto listo para una notificación, p. ej. "Persona 1 56 % · Persona 2 44 %. Persona 1 ha dedicado 40 min más."
+      - name: "Reparto mensaje semana"
+        unique_id: reparto_mensaje_semana
+        value_template: "{{ value_json.week.message }}"
+    binary_sensor:
+      - name: "Reparto equilibrado"
+        unique_id: reparto_equilibrado
+        value_template: "{{ value_json.week.balanced }}"
+
+# ---- Apuntar una tarea desde Home Assistant -----------------------------------------------------
+# La app identifica a la persona por su número: 1 = primera persona, 2 = segunda
+# (el mismo orden que ves en http://IP-DEL-NAS:3000/api/ha).
+rest_command:
+  reparto_apuntar:
+    url: "http://IP-DEL-NAS:3000/api/entries/quick"
+    method: post
+    content_type: "application/json"
+    headers:
+      x-user: "{{ user }}"
+    payload: '{"task": {{ task }}, "minutes": {{ minutes }}}'
+
+script:
+  reparto_apuntar_tarea:
+    alias: "Reparto: apuntar tarea"
+    icon: mdi:broom
+    fields:
+      user:
+        description: "Quién la ha hecho: 1 o 2"
+        example: 1
+      task:
+        description: "ID de la tarea (aparecen en /api/ha, apartado tasks)"
+        example: 2
+      minutes:
+        description: "Minutos que ha tardado"
+        example: 15
+    sequence:
+      - action: rest_command.reparto_apuntar
+        data:
+          user: "{{ user }}"
+          task: "{{ task }}"
+          minutes: "{{ minutes }}"
+      # Refresca los sensores sin esperar al siguiente sondeo.
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.reparto_mensaje_semana
+
+# ---- Resumen semanal por notificación ------------------------------------------------------------
+# Sustituye a las notificaciones push de la app. Usa la app Companion de Home Assistant:
+# no necesita HTTPS propio ni exponer nada a Internet.
+automation:
+  - alias: "Reparto: resumen semanal"
+    id: reparto_resumen_semanal
+    triggers:
+      - trigger: time
+        at: "19:00:00"
+    conditions:
+      - condition: time
+        weekday:
+          - sun
+    actions:
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.reparto_mensaje_semana
+      - delay: "00:00:02"
+      # Cambia los nombres por los de vuestros móviles: Herramientas para desarrolladores →
+      # Acciones, y busca "notify.mobile_app_".
+      - action: notify.mobile_app_iphone_de_persona_1
+        data:
+          title: "Parejo"
+          message: "{{ states('sensor.reparto_mensaje_semana') }}"
+      - action: notify.mobile_app_iphone_de_persona_2
+        data:
+          title: "Parejo"
+          message: "{{ states('sensor.reparto_mensaje_semana') }}"

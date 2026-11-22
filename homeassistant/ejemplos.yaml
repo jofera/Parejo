@@ -1,0 +1,38 @@
+# Ejemplos para apuntar tareas sin abrir la app. Copia los que quieras a tu archivo de
+# automatizaciones. Necesitan el script script.reparto_apuntar_tarea de reparto.yaml.
+#
+# Los IDs de las tareas están en http://IP-DEL-NAS:3000/api/ha (apartado "tasks").
+# Con las tareas de ejemplo: 1 Cocinar, 2 Recoger la cocina, 3 Lavadora y tender,
+# 4 Doblar y guardar ropa, 5 Barrer o aspirar, 6 Limpiar el baño, 7 Compra, 8 Basura y reciclaje.
+
+# 1) Pegatina NFC en el lavavajillas: acercas el móvil y queda apuntado.
+#    Primero registra la etiqueta en la app Companion (Ajustes → Etiquetas NFC) para obtener su ID.
+#    La automatización sabe quién ha sido por el móvil que la ha leído: busca el ID de cada móvil en
+#    Ajustes → Dispositivos y servicios → Dispositivos → (el móvil) → ID del dispositivo (en la URL).
+- alias: "Reparto: NFC lavavajillas"
+  id: reparto_nfc_lavavajillas
+  triggers:
+    - trigger: tag
+      tag_id: "ID-DE-LA-ETIQUETA"
+  actions:
+    - action: script.reparto_apuntar_tarea
+      data:
+        user: "{{ 1 if trigger.device_id == 'ID-DEL-MOVIL-DE-PERSONA-1' else 2 }}"
+        task: 2
+        minutes: 15
+
+# 2) Un botón físico (p. ej. Zigbee) que siempre apunta lo mismo y siempre a la misma persona.
+- alias: "Reparto: botón de la cocina"
+  id: reparto_boton_cocina
+  triggers:
+    - trigger: state
+      entity_id: event.boton_cocina_action   # la entidad de evento de tu botón
+  conditions:
+    - condition: template
+      value_template: "{{ trigger.to_state.attributes.event_type == 'single' }}"
+  actions:
+    - action: script.reparto_apuntar_tarea
+      data:
+        user: 1
+        task: 1
+        minutes: 45
