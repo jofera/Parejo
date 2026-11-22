@@ -29,6 +29,9 @@ const store = {
   del: (k) => { try { localStorage.removeItem(k); } catch { /* sin almacenamiento */ } },
 };
 
+// Sin zoom con pellizco (Safari ignora user-scalable=no).
+for (const ev of ['gesturestart', 'gesturechange']) document.addEventListener(ev, (e) => e.preventDefault());
+
 const S = {
   me: Number(store.get('me')) || null,
   tab: 'home',
@@ -57,6 +60,25 @@ async function api(path, { method = 'GET', body } = {}) {
   if ([502, 503, 504].includes(res.status)) throw offline();
   if (!res.ok) throw new Error(data.error || 'Algo ha fallado. Inténtalo de nuevo.');
   return data;
+}
+
+// Lecturas de solo consulta (historial, ranking): se guarda la última respuesta buena
+// para poder verlas sin conexión. Los datos dependen de quién eres, por eso la clave lleva S.me.
+async function apiCached(path) {
+  const key = `c${S.me}:${path}`;
+  try {
+    const data = await api(path);
+    store.set(key, JSON.stringify({ at: Date.now(), data }));
+    return data;
+  } catch (e) {
+    if (!e.offline) throw e;
+    let hit = null;
+    try { hit = JSON.parse(store.get(key) || 'null'); } catch { hit = null; }
+    if (!hit) throw e;
+    S.offline = true;
+    S.snapAt = Math.min(S.snapAt || hit.at, hit.at);
+    return hit.data;
+  }
 }
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -223,6 +245,19 @@ async function refresh() {
   S.today = today.entries;
   S.offline = false;
   saveSnapshot();
+  prefetch();
+}
+
+// Con conexión, deja guardadas las vistas de consulta para poder abrirlas sin ella.
+// Como mucho cada 10 minutos, y sin esperar: si algo falla, no pasa nada.
+function prefetch() {
+  if (Date.now() - (S.prefetchAt || 0) < 6e5) return;
+  S.prefetchAt = Date.now();
+  const paths = [
+    '/api/history?kind=week&n=12', '/api/history?kind=month&n=12', '/api/history?kind=year&n=5',
+    ...['week', 'month', 'year', 'all'].map((p) => `/api/ranking?period=${p}`),
+  ];
+  for (const p of paths) apiCached(p).catch(() => {});
 }
 
 // Actualiza y, si hay conexión, envía lo pendiente. Sin conexión no molesta: solo lo indica arriba.
@@ -605,10 +640,15 @@ function homeView() {
 }
 
 async function historyView() {
-  const { periods } = await api(`/api/history?kind=${S.histKind}&n=${S.histKind === 'year' ? 5 : 12}`);
+  const { periods } = await apiCached(`/api/history?kind=${S.histKind}&n=${S.histKind === 'year' ? 5 : 12}`);
   let detail = null;
   const open = periods.find((p) => p.from === S.histOpen);
-  if (open) detail = (await api(`/api/entries?from=${open.from}&to=${open.to}`)).entries.filter((e) => e.end);
+  if (open) {
+    try { detail = (await apiCached(`/api/entries?from=${open.from}&to=${open.to}`)).entries.filter((e) => e.end); } catch (e) {
+      if (!e.offline) throw e;
+      detail = []; // periodo que no se había abierto antes de perder la conexión
+    }
+  }
 
   const seg = h('div', { class: 'seg-ctl', role: 'group', 'aria-label': 'Periodo' },
     [['week', 'Semanas'], ['month', 'Meses'], ['year', 'Años']].map(([k, label]) =>
@@ -644,7 +684,7 @@ function entryGroups(entries) {
 }
 
 async function rankingView() {
-  const r = await api(`/api/ranking?period=${S.rankPeriod}`);
+  const r = await apiCached(`/api/ranking?period=${S.rankPeriod}`);
   const [a, b] = S.users;
   const ta = r.totals[a.id] || 0, tb = r.totals[b.id] || 0, tot = ta + tb;
   const balanced = tot > 0 && Math.abs(ta - tb) / tot <= S.settings.balanced;
@@ -789,7 +829,7 @@ async function render() {
     view = await ({ home: homeView, history: historyView, ranking: rankingView, more: moreView }[S.tab])();
   } catch (e) {
     if (e.offline) S.offline = true;
-    view = h('div', { class: 'view' }, h('div', { class: 'card' }, h('p', { class: 'err' }, e.offline ? 'Esta sección necesita conexión con el servidor. Vuelve a abrirla cuando estés en casa o tengas conexión.' : e.message)));
+    view = h('div', { class: 'view' }, h('div', { class: 'card' }, h('p', { class: 'err' }, e.offline ? 'Esta sección aún no se había abierto con conexión en este móvil. Ábrela una vez con conexión y después también se verá sin ella.' : e.message)));
   }
   if (token !== S.renderToken) return;
   $app.replaceChildren(...[statusBar(), view, nav()].filter(Boolean));
