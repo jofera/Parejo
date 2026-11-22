@@ -4,17 +4,24 @@ import path from 'node:path';
 
 const COLORS = ['#0b8576', '#c9600a'];
 
+// [emoji, nombre, minutos habituales, posición en pantalla]. Primero las tareas sueltas y luego
+// los grupos con sus subtareas (el orden de inserción solo afecta a los identificadores).
 const DEFAULT_TASKS = [
-  ['🍳', 'Cocinar', 45],
-  ['🍽️', 'Recoger la cocina', 15],
-  ['🧺', 'Lavadora y tender', 20],
-  ['👕', 'Doblar y guardar ropa', 20],
-  ['🧹', 'Barrer o aspirar', 20],
-  ['🧽', 'Limpiar el baño', 30],
-  ['🛒', 'Compra', 60],
-  ['🗑️', 'Basura y reciclaje', 10],
-  ['🧼', 'Limpieza general', 30],
-  ['👔', 'Planchar', 30],
+  ['🍳', 'Cocinar', 45, 0],
+  ['🍽️', 'Recoger la cocina', 15, 1],
+  ['🧹', 'Barrer o aspirar', 20, 3],
+  ['🧽', 'Limpiar el baño', 30, 4],
+  ['🛒', 'Compra', 60, 5],
+  ['🗑️', 'Basura y reciclaje', 10, 6],
+  ['🧼', 'Limpieza general', 30, 7],
+  ['👔', 'Planchar', 30, 8],
+];
+const DEFAULT_GROUPS = [
+  ['🧺', 'Colada', 2, [
+    ['🔘', 'Poner la lavadora', 5],
+    ['👕', 'Tender', 10],
+    ['🧦', 'Recoger y doblar la ropa', 20],
+  ]],
 ];
 
 export function openDb(file, { users = 'Persona 1,Persona 2' } = {}) {
@@ -58,6 +65,11 @@ export function openDb(file, { users = 'Persona 1,Persona 2' } = {}) {
     );
   `);
 
+  // Migraciones: bases de datos creadas con versiones anteriores.
+  if (!db.prepare('PRAGMA table_info(tasks)').all().some((c) => c.name === 'parent_id')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id)');
+  }
+
   if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
     const names = users.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 2);
     while (names.length < 2) names.push(`Persona ${names.length + 1}`);
@@ -66,9 +78,12 @@ export function openDb(file, { users = 'Persona 1,Persona 2' } = {}) {
     );
   }
   if (db.prepare('SELECT COUNT(*) AS n FROM tasks').get().n === 0) {
-    DEFAULT_TASKS.forEach(([emoji, name, min], i) =>
-      db.prepare('INSERT INTO tasks (emoji, name, default_min, sort) VALUES (?, ?, ?, ?)').run(emoji, name, min, i),
-    );
+    const insert = db.prepare('INSERT INTO tasks (emoji, name, default_min, sort, parent_id) VALUES (?, ?, ?, ?, ?)');
+    for (const [emoji, name, min, sort] of DEFAULT_TASKS) insert.run(emoji, name, min, sort, null);
+    for (const [emoji, name, sort, children] of DEFAULT_GROUPS) {
+      const parent = Number(insert.run(emoji, name, 20, sort, null).lastInsertRowid);
+      children.forEach(([e, n, min], i) => insert.run(e, n, min, i, parent));
+    }
   }
   return db;
 }

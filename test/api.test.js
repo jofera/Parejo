@@ -217,6 +217,63 @@ test('editar horas y comentario deja historial', async () => {
   assert.equal(second.data.entry.end - second.data.entry.start, 50 * 60000);
 });
 
+test('grupos de tareas: solo se apunta en las subtareas', async () => {
+  const mk = async (body) => (await call('POST', '/api/tasks', 1, body)).data.id;
+  const colada = await mk({ name: 'Colada', emoji: '🧺' });
+  const poner = await mk({ name: 'Poner lavadora', default_min: 5, parent: colada });
+  const tender = await mk({ name: 'Tender', default_min: 10, parent: colada });
+
+  const { data: boot } = await call('GET', '/api/bootstrap', 1);
+  assert.equal(boot.tasks.find((t) => t.id === poner).parent_id, colada);
+  assert.equal(boot.tasks.find((t) => t.id === colada).parent_id, null);
+
+  // el grupo no es apuntable; las subtareas sí
+  assert.equal((await call('POST', '/api/entries/quick', 1, { task: colada, minutes: 10 })).status, 400);
+  assert.equal((await call('POST', '/api/timer/start', 1, { task: colada })).status, 400);
+  assert.equal((await call('POST', '/api/entries/quick', 1, { task: poner, minutes: 5 })).status, 200);
+  assert.equal((await call('POST', '/api/entries/quick', 2, { task: tender, minutes: 12 })).status, 200);
+
+  // solo dos niveles
+  assert.equal((await call('POST', '/api/tasks', 1, { name: 'Nieta', parent: poner })).status, 400);
+  assert.equal((await call('PATCH', `/api/tasks/${colada}`, 1, { parent: tender })).status, 400);
+  assert.equal((await call('PATCH', `/api/tasks/${tender}`, 1, { parent: tender })).status, 400);
+  assert.equal((await call('PATCH', `/api/tasks/${tender}`, 1, { parent: 9999 })).status, 400);
+
+  // sacar una subtarea del grupo y volver a meterla
+  assert.equal((await call('PATCH', `/api/tasks/${tender}`, 1, { parent: null })).status, 200);
+  assert.equal((await call('GET', '/api/bootstrap', 1)).data.tasks.find((t) => t.id === tender).parent_id, null);
+  assert.equal((await call('PATCH', `/api/tasks/${tender}`, 1, { parent: colada })).status, 200);
+  // editar el nombre sin tocar el grupo lo conserva
+  await call('PATCH', `/api/tasks/${tender}`, 1, { name: 'Tender la ropa' });
+  assert.equal((await call('GET', '/api/bootstrap', 1)).data.tasks.find((t) => t.id === tender).parent_id, colada);
+
+  // Home Assistant solo ve tareas apuntables
+  const { data: ha } = await call('GET', '/api/ha', null);
+  assert.ok(!ha.tasks.some((t) => t.id === colada));
+  assert.ok(ha.tasks.some((t) => t.id === poner));
+
+  // al corregir un registro tampoco se puede mover a un grupo
+  const { data: e } = await call('POST', '/api/entries/quick', 1, { task: poner, minutes: 5 });
+  clock += 3 * 60_000;
+  assert.equal((await call('PATCH', `/api/entries/${e.entry.id}`, 1, { task: colada, reason: 'prueba' })).status, 400);
+});
+
+test('migra una base de datos anterior sin grupos', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { DatabaseSync } = await import('node:sqlite');
+  const file = `${mkdtempSync(`${tmpdir()}/parejo-`)}/old.db`;
+  const old = new DatabaseSync(file);
+  old.exec(`CREATE TABLE tasks (id INTEGER PRIMARY KEY, name TEXT NOT NULL, emoji TEXT NOT NULL DEFAULT '🏠',
+            default_min INTEGER NOT NULL DEFAULT 20, archived INTEGER NOT NULL DEFAULT 0, sort INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO tasks (name) VALUES ('Antigua');`);
+  old.close();
+  const db = openDb(file, { users: 'A,B' });
+  assert.ok(db.prepare('PRAGMA table_info(tasks)').all().some((c) => c.name === 'parent_id'));
+  assert.equal(db.prepare('SELECT name FROM tasks WHERE id = 1').get().name, 'Antigua');
+  db.close();
+});
+
 test('bloquea rutas fuera de public', async () => {
   const res = await fetch(base + '/%2e%2e/package.json');
   assert.ok([403, 404].includes(res.status));

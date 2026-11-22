@@ -13,6 +13,7 @@ App para dos personas que registra el **tiempo** dedicado a las tareas del hogar
 
 - Apuntar una tarea por **duración**, en dos toques. Un día distinto de hoy se elige con «Ayer» u «Otro día».
 - Opcional, en «Más detalles»: un **comentario** (cena, lasaña…; la app sugiere los que más usas en cada tarea) y la **hora de inicio y de fin** exactas.
+- **Grupos de tareas**: una tarea puede tener subtareas (p. ej. «Colada» → poner la lavadora, tender, recoger). Se apunta siempre en la subtarea; el ranking suma por grupo y detalla cada parte. Se crean desde *Más → Tareas* eligiendo «Dentro de».
 - Balance de la semana siempre visible en la pantalla de inicio.
 - Historial por semanas, meses y años, con el detalle de cada periodo.
 - Ranking simple (semana, mes, año y total), más el desglose por tarea.

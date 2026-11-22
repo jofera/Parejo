@@ -52,6 +52,12 @@ export function createApi({ db, now = () => Date.now() }) {
     if (!t) throw bad('Tarea desconocida');
     return t;
   };
+  // Solo se puede apuntar en tareas "hoja": las que tienen subtareas son grupos.
+  const leafById = (id) => {
+    const t = taskById(id);
+    if (get('SELECT 1 AS x FROM tasks WHERE parent_id = ?', t.id)) throw bad(`«${t.name}» tiene subtareas: elige una de ellas.`);
+    return t;
+  };
   const minutesOf = (v) => {
     const m = Math.round(Number(v));
     if (!Number.isFinite(m) || m < 1) throw bad('La duración debe ser de al menos 1 minuto.');
@@ -126,11 +132,17 @@ export function createApi({ db, now = () => Date.now() }) {
   route('GET', '/api/bootstrap', (req) => {
     const u = me(req);
     const since = now() - 60 * 24 * 60 * MIN;
-    const tasks = all(
+    const rows = all(
       `SELECT t.*, (SELECT COUNT(*) FROM entries e WHERE e.task_id = t.id AND e.user_id = ? AND e.deleted = 0 AND e.start_ts > ?) AS uses
-         FROM tasks t ORDER BY uses DESC, t.sort, t.id`,
+         FROM tasks t`,
       u.id, since,
-    ).map((t) => ({ id: t.id, name: t.name, emoji: t.emoji, default_min: t.default_min, archived: !!t.archived }));
+    );
+    // Un grupo cuenta los usos de sus subtareas para ordenarse junto a las demás tareas.
+    const uses = new Map(rows.map((t) => [t.id, t.uses]));
+    for (const t of rows) if (t.parent_id) uses.set(t.parent_id, (uses.get(t.parent_id) || 0) + t.uses);
+    const tasks = rows
+      .sort((x, y) => uses.get(y.id) - uses.get(x.id) || x.sort - y.sort || x.id - y.id)
+      .map((t) => ({ id: t.id, name: t.name, emoji: t.emoji, default_min: t.default_min, archived: !!t.archived, parent_id: t.parent_id }));
     // Comentarios más usados por esta persona en cada tarea (para sugerirlos con un toque).
     const notes = {};
     for (const r of all(
@@ -191,7 +203,8 @@ export function createApi({ db, now = () => Date.now() }) {
         return { people: us.map((u) => ({ id: u.id, name: u.name, minutes: Math.round(totals[u.id] / MIN) })) };
       })(),
       active,
-      tasks: all('SELECT id, name, emoji, default_min FROM tasks WHERE archived = 0 ORDER BY sort, id'),
+      tasks: all(`SELECT id, name, emoji, default_min, parent_id FROM tasks t WHERE archived = 0
+                    AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id) ORDER BY sort, id`),
     };
   });
 
@@ -267,7 +280,7 @@ export function createApi({ db, now = () => Date.now() }) {
 
   route('POST', '/api/timer/start', (req, _q, body) => {
     const u = me(req);
-    const task = taskById(body.task);
+    const task = leafById(body.task);
     const stopped = stopActive(u.id);
     const t = now();
     const r = run(
@@ -291,7 +304,7 @@ export function createApi({ db, now = () => Date.now() }) {
   // `note` es un comentario opcional.
   route('POST', '/api/entries/quick', (req, _q, body) => {
     const u = me(req);
-    const task = taskById(body.task);
+    const task = leafById(body.task);
     const note = noteOf(body.note);
     const t = now();
     let start;
@@ -364,7 +377,7 @@ export function createApi({ db, now = () => Date.now() }) {
     let duration = e.end_ts - e.start_ts;
 
     if (body.task !== undefined && Number(body.task) !== e.task_id) {
-      taskId = taskById(body.task).id;
+      taskId = leafById(body.task).id;
       changes.task = { from: e.task_id, to: taskId };
     }
     if (body.note !== undefined) {
@@ -436,12 +449,25 @@ export function createApi({ db, now = () => Date.now() }) {
     const default_min = Math.min(Math.max(Math.round(Number(body.default_min ?? current.default_min ?? 20)) || 20, 1), 240);
     return { name, emoji, default_min };
   };
+  // Grupo al que pertenece la tarea (`parent`): solo hay dos niveles (grupo > subtarea).
+  function parentOf(body, current) {
+    if (body.parent === undefined) return current ? current.parent_id : null;
+    if (!body.parent) return null;
+    const p = taskById(body.parent);
+    if (p.parent_id) throw bad('Una subtarea no puede ser a la vez un grupo.');
+    if (current) {
+      if (p.id === current.id) throw bad('Una tarea no puede estar dentro de sí misma.');
+      if (get('SELECT 1 AS x FROM tasks WHERE parent_id = ?', current.id)) throw bad('Esta tarea es un grupo con subtareas: no puede estar dentro de otro.');
+    }
+    return p.id;
+  }
 
   route('POST', '/api/tasks', (req, _q, body) => {
     me(req);
     const f = taskFields(body);
+    const parent = parentOf(body, null);
     const sort = (get('SELECT MAX(sort) AS m FROM tasks').m ?? 0) + 1;
-    const r = run('INSERT INTO tasks (name, emoji, default_min, sort) VALUES (?, ?, ?, ?)', f.name, f.emoji, f.default_min, sort);
+    const r = run('INSERT INTO tasks (name, emoji, default_min, sort, parent_id) VALUES (?, ?, ?, ?, ?)', f.name, f.emoji, f.default_min, sort, parent);
     return { id: Number(r.lastInsertRowid) };
   });
 
@@ -449,8 +475,9 @@ export function createApi({ db, now = () => Date.now() }) {
     me(req);
     const t = taskById(m[1]);
     const f = taskFields(body, t);
+    const parent = parentOf(body, t);
     const archived = body.archived === undefined ? t.archived : body.archived ? 1 : 0;
-    run('UPDATE tasks SET name = ?, emoji = ?, default_min = ?, archived = ? WHERE id = ?', f.name, f.emoji, f.default_min, archived, t.id);
+    run('UPDATE tasks SET name = ?, emoji = ?, default_min = ?, archived = ?, parent_id = ? WHERE id = ?', f.name, f.emoji, f.default_min, archived, parent, t.id);
     return { ok: true };
   });
 

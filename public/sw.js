@@ -1,5 +1,5 @@
 // Service worker: guarda la interfaz para que abra al instante.
-const CACHE = 'parejo-v2';
+const CACHE = 'parejo-v3';
 const SHELL = ['/', '/style.css', '/app.js', '/manifest.webmanifest', '/icons/icon.svg'];
 
 self.addEventListener('install', (e) => {

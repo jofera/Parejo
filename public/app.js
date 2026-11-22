@@ -85,7 +85,15 @@ function periodLabel(kind, p, i) {
 const user = (id) => S.users.find((u) => u.id === id);
 const other = () => S.users.find((u) => u.id !== S.me);
 const task = (id) => S.tasks.find((t) => t.id === id) || { emoji: '🏠', name: 'Tarea' };
-const activeTasks = () => S.tasks.filter((t) => !t.archived);
+const childrenOf = (id) => S.tasks.filter((t) => t.parent_id === id);
+const isGroup = (t) => childrenOf(t.id).length > 0;
+const parentOf = (t) => (t.parent_id ? S.tasks.find((x) => x.id === t.parent_id) : null);
+const fullName = (t) => { const p = parentOf(t); return p ? `${p.name} › ${t.name}` : t.name; };
+const liveChildren = (g) => childrenOf(g.id).filter((c) => !c.archived);
+// Inicio: tareas sueltas y grupos (un grupo sin subtareas visibles no se muestra).
+const topTasks = () => S.tasks.filter((t) => !t.archived && !t.parent_id && (!isGroup(t) || liveChildren(t).length));
+// Tareas en las que se puede apuntar: las que no son grupos.
+const leafTasks = () => S.tasks.filter((t) => !t.archived && !isGroup(t) && !parentOf(t)?.archived);
 const buzz = () => navigator.vibrate?.(15);
 
 /* ---------- toast y hojas ---------- */
@@ -166,7 +174,7 @@ function entryRow(e, { showUser = true } = {}) {
   const children = [
     h('span', { class: 'em' }, t.emoji),
     h('span', { class: 'main' },
-      h('b', null, t.name),
+      h('b', null, fullName(t)),
       h('span', null, [showUser ? u.name : '', e.timed ? `${timeStr(e.start)}–${timeStr(e.end)}` : '', e.note ? `“${e.note}”` : '', e.edits ? 'editado' : ''].filter(Boolean).join(' · ') || '\u00a0')),
     h('span', { class: 'dur' }, fmtDur(e.end - e.start)),
     mine && h('span', { class: 'edit', 'aria-hidden': 'true' }, '✎'),
@@ -196,7 +204,7 @@ async function quickLog(t, minutes, day, opts = {}) {
     buzz();
     await refresh(); await render();
     const when = day && day !== dateStr(serverNow()) ? ` · ${dayText(day)}` : '';
-    toast(`✓ ${t.emoji} ${t.name}${entry.note ? ` (${entry.note})` : ''} · ${fmtDur(minutes * 60000)}${when}`, {
+    toast(`✓ ${t.emoji} ${fullName(t)}${entry.note ? ` (${entry.note})` : ''} · ${fmtDur(minutes * 60000)}${when}`, {
       label: 'Deshacer',
       fn: () => api(`/api/entries/${entry.id}/undo`, { method: 'POST' }).then(reload).catch(fail),
     });
@@ -275,7 +283,7 @@ function taskSheet(t) {
     };
 
     return [
-      h('h2', null, `${t.emoji} ${t.name}`),
+      h('h2', null, `${t.emoji} ${fullName(t)}`),
       h('div', { class: 'chips', style: 'margin-top:10px' }, chips.hoy, chips.ayer, chips.otro),
       h('div', { style: 'margin-top:10px' }, dateWrap),
       h('h3', null, '¿Cuánto has tardado?'),
@@ -293,9 +301,22 @@ function taskSheet(t) {
   });
 }
 
+// Un grupo (p. ej. «Colada») abre la lista de sus subtareas.
+function groupSheet(g) {
+  sheet(() => [
+    h('h2', null, `${g.emoji} ${g.name}`),
+    h('p', { class: 'hint' }, '¿Qué parte has hecho?'),
+    h('div', { class: 'grid', style: 'margin-top:12px' }, liveChildren(g).map((c) =>
+      h('button', { class: 'tile', onclick: () => taskSheet(c) }, h('span', { class: 'em' }, c.emoji), c.name))),
+  ]);
+}
+
 function taskSelect(selectedId) {
-  return h('select', { id: 'f-task' }, activeTasks().concat(S.tasks.filter((t) => t.archived && t.id === selectedId)).map((t) =>
-    h('option', { value: t.id, selected: t.id === selectedId }, `${t.emoji} ${t.name}`)));
+  const list = leafTasks();
+  const cur = S.tasks.find((t) => t.id === selectedId);
+  if (cur && !list.includes(cur)) list.push(cur); // tarea oculta o que ahora es un grupo: se conserva la actual
+  return h('select', { id: 'f-task' }, list.map((t) =>
+    h('option', { value: t.id, selected: t.id === selectedId }, `${t.emoji} ${fullName(t)}`)));
 }
 
 const REASONS = ['Me equivoqué de tarea', 'Duración incorrecta', 'Día incorrecto', 'Se me olvidó parar', 'Añadir comentario'];
@@ -388,13 +409,13 @@ function homeView() {
     const t = task(mine.task_id);
     nodes.push(h('section', { class: 'card timer' },
       h('div', { class: 'lbl' }, 'En marcha'),
-      h('div', { class: 'name' }, `${t.emoji} ${t.name}`),
+      h('div', { class: 'name' }, `${t.emoji} ${fullName(t)}`),
       h('div', { class: 'clock', 'data-clock': mine.start }, fmtClock(serverNow() - mine.start)),
       h('button', { class: 'btn-stop', onclick: stopTimer }, '■  Terminar')));
   }
   if (theirs) {
     const t = task(theirs.task_id);
-    nodes.push(h('p', { class: 'partner' }, `${o.name} está con ${t.emoji} ${t.name} (desde hace `, h('span', { 'data-since': theirs.start }, fmtDur(serverNow() - theirs.start)), ')'));
+    nodes.push(h('p', { class: 'partner' }, `${o.name} está con ${t.emoji} ${fullName(t)} (desde hace `, h('span', { 'data-since': theirs.start }, fmtDur(serverNow() - theirs.start)), ')'));
   }
 
   nodes.push(h('section', { class: 'card' },
@@ -403,8 +424,10 @@ function homeView() {
 
   nodes.push(h('section', null,
     h('h2', { class: 'card', style: 'background:none;box-shadow:none;padding:0 2px;margin-bottom:8px' }, '¿Qué has hecho?'),
-    h('div', { class: 'grid' }, activeTasks().map((t) =>
-      h('button', { class: 'tile', onclick: () => taskSheet(t) }, h('span', { class: 'em' }, t.emoji), t.name)))));
+    h('div', { class: 'grid' }, topTasks().map((t) =>
+      isGroup(t)
+        ? h('button', { class: 'tile', onclick: () => groupSheet(t) }, h('span', { class: 'em' }, t.emoji), t.name, h('small', { class: 'grp' }, `${liveChildren(t).length} partes ▸`))
+        : h('button', { class: 'tile', onclick: () => taskSheet(t) }, h('span', { class: 'em' }, t.emoji), t.name)))));
 
   const done = S.today.filter((e) => e.end);
   nodes.push(h('section', { class: 'card' },
@@ -481,17 +504,29 @@ async function rankingView() {
         S.users.map((u) => h('div', { class: 'stat' }, h('span', null, `Semanas en cabeza de ${u.name}`), h('b', null, String(w.led[u.id] || 0)))))
     : null;
 
-  const byTask = [...r.byTask]
-    .map((x) => ({ ...x, sum: Object.values(x.totals).reduce((s, v) => s + v, 0) }))
-    .sort((x, y) => y.sum - x.sum);
+  // Se suma por grupo (p. ej. «Colada»), con el detalle de sus subtareas debajo.
+  const sumOf = (totals) => Object.values(totals).reduce((s2, v) => s2 + v, 0);
+  const groups = new Map();
+  for (const x of r.byTask) {
+    const t = task(x.task_id);
+    const key = t.parent_id || x.task_id;
+    if (!groups.has(key)) groups.set(key, { key, totals: {}, parts: [] });
+    const g = groups.get(key);
+    for (const u of S.users) g.totals[u.id] = (g.totals[u.id] || 0) + (x.totals[u.id] || 0);
+    g.parts.push({ ...x, sum: sumOf(x.totals) });
+  }
+  const byTask = [...groups.values()].map((g) => ({ ...g, sum: sumOf(g.totals) })).sort((x, y) => y.sum - x.sum);
   const tasks = byTask.length
     ? h('section', { class: 'card' },
         h('h2', null, 'Por tarea'),
-        byTask.map((x) => {
-          const t = task(x.task_id);
+        byTask.map((g) => {
+          const t = task(g.key);
           return h('div', { class: 'task-line' },
-            h('div', { class: 'head' }, h('b', null, `${t.emoji} ${t.name}`), h('span', null, `${a.name} ${fmtDur(x.totals[a.id] || 0)} · ${b.name} ${fmtDur(x.totals[b.id] || 0)}`)),
-            splitBar(x.totals));
+            h('div', { class: 'head' }, h('b', null, `${t.emoji} ${t.name}`), h('span', null, `${a.name} ${fmtDur(g.totals[a.id] || 0)} · ${b.name} ${fmtDur(g.totals[b.id] || 0)}`)),
+            splitBar(g.totals),
+            isGroup(t) && g.parts.sort((x, y) => y.sum - x.sum).map((p) =>
+              h('div', { class: 'sub-line' }, h('span', null, p.task_id === g.key ? 'Otros' : task(p.task_id).name),
+                h('span', null, `${a.name} ${fmtDur(p.totals[a.id] || 0)} · ${b.name} ${fmtDur(p.totals[b.id] || 0)}`))));
         }))
     : null;
 
@@ -505,9 +540,15 @@ function taskEditSheet(t) {
     const emoji = h('input', { type: 'text', value: t?.emoji || '🏠', maxlength: '8', 'aria-label': 'Icono' });
     const name = h('input', { type: 'text', value: t?.name || '', maxlength: '40', placeholder: 'Nombre de la tarea' });
     const min = h('input', { type: 'number', inputmode: 'numeric', min: '1', max: '240', value: t?.default_min || 20 });
+    const hasKids = !!t && isGroup(t);
+    const parentSel = h('select', { 'aria-label': 'Dentro de', disabled: hasKids },
+      h('option', { value: '' }, 'Ninguno (tarea suelta)'),
+      S.tasks.filter((p) => !p.parent_id && p.id !== t?.id).map((p) =>
+        h('option', { value: p.id, selected: t?.parent_id === p.id }, `${p.emoji} ${p.name}`)));
     const save = async (extra = {}) => {
       try {
         const body = { emoji: emoji.value, name: name.value, default_min: Number(min.value), ...extra };
+        if (!hasKids) body.parent = parentSel.value ? Number(parentSel.value) : null;
         if (t) await api(`/api/tasks/${t.id}`, { method: 'PATCH', body }); else await api('/api/tasks', { method: 'POST', body });
         close(); await reload();
       } catch (x) { err.textContent = x.message; }
@@ -516,7 +557,11 @@ function taskEditSheet(t) {
       h('h2', null, t ? 'Editar tarea' : 'Nueva tarea'),
       h('div', { class: 'form', style: 'margin-top:12px' },
         h('div', { class: 'two', style: 'grid-template-columns:90px 1fr' }, h('label', null, 'Icono', emoji), h('label', null, 'Nombre', name)),
-        h('label', null, 'Duración habitual (minutos)', min),
+        hasKids ? null : h('label', null, 'Duración habitual (minutos)', min),
+        h('label', null, 'Dentro de (opcional)', parentSel),
+        h('p', { class: 'hint' }, hasKids
+          ? `Es un grupo con ${childrenOf(t.id).length} subtareas. Se apunta en cada subtarea.`
+          : 'Elige un grupo para hacerla subtarea (p. ej. «Tender» dentro de «Colada»). Si el grupo elegido ya tenía registros propios, se conservan, pero a partir de ahora se apunta en sus subtareas.'),
         err,
         h('button', { class: 'btn', onclick: () => save() }, 'Guardar'),
         t && h('button', { class: 'btn danger', onclick: () => save({ archived: !t.archived }) }, t.archived ? 'Volver a mostrar' : 'Ocultar tarea')),
@@ -530,13 +575,18 @@ async function moreView() {
     h('input', { type: 'text', value: u.name, maxlength: '30', onchange: (ev) => api(`/api/users/${u.id}`, { method: 'PATCH', body: { name: ev.target.value } }).then(reload).catch(fail) })));
 
   const archived = S.tasks.filter((t) => t.archived);
-  const taskRow = (t) => h('button', { class: 'row', onclick: () => taskEditSheet(t) },
-    h('span', { class: 'em' }, t.emoji), h('span', { class: 'main' }, h('b', null, t.name), h('span', null, `Habitual: ${t.default_min} min`)), h('span', { class: 'edit' }, '✎'));
+  const taskRow = (t) => h('button', { class: `row${t.parent_id ? ' child' : ''}`, onclick: () => taskEditSheet(t) },
+    h('span', { class: 'em' }, t.emoji),
+    h('span', { class: 'main' }, h('b', null, t.name),
+      h('span', null, isGroup(t) ? `Grupo · ${childrenOf(t.id).length} subtareas` : `${t.parent_id ? `En «${parentOf(t)?.name}» · ` : ''}Habitual: ${t.default_min} min`)),
+    h('span', { class: 'edit' }, '✎'));
+  // Tareas sueltas y grupos, cada grupo seguido de sus subtareas.
+  const ordered = S.tasks.filter((t) => !t.archived && !t.parent_id).flatMap((t) => [t, ...childrenOf(t.id).filter((c) => !c.archived)]);
 
   return h('div', { class: 'view' },
     h('div', { class: 'top' }, h('h1', null, 'Más')),
     h('section', { class: 'card' }, h('h2', null, 'Tareas'),
-      activeTasks().map(taskRow),
+      ordered.map(taskRow),
       h('button', { class: 'link', onclick: () => taskEditSheet(null) }, '＋ Nueva tarea'),
       archived.length > 0 && [h('h2', { style: 'margin-top:10px' }, 'Ocultas'), archived.map(taskRow)]),
     h('section', { class: 'card' }, h('h2', null, 'Personas'),
