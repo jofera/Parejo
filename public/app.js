@@ -37,7 +37,7 @@ const S = {
   tab: 'home',
   users: [], tasks: [], notes: {}, active: [], settings: {}, week: null, today: [], order: null,
   skew: 0, histKind: 'week', histOpen: null, rankPeriod: 'week', renderToken: 0,
-  offline: false, snapAt: null, local: null,
+  offline: false, snapAt: null, local: null, update: false,
 };
 try { S.local = JSON.parse(store.get('ltimer') || 'null'); } catch { S.local = null; }
 if (S.local && S.local.user !== S.me) S.local = null;
@@ -778,6 +778,8 @@ function taskEditSheet(t) {
 
 async function moreView() {
   const me = user(S.me);
+  let ver = store.get('ver') || '';
+  try { ver = (await api('/api/version')).version; store.set('ver', ver); } catch { /* sin conexión: la última conocida */ }
   const names = S.users.map((u) => h('label', null, `Nombre de la persona ${u.id === S.me ? '(tú)' : ''}`,
     h('input', { type: 'text', value: u.name, maxlength: '30', onchange: (ev) => api(`/api/users/${u.id}`, { method: 'PATCH', body: { name: ev.target.value } }).then(reload).catch(fail) })));
 
@@ -799,7 +801,8 @@ async function moreView() {
     h('section', { class: 'card' }, h('h2', null, 'Personas'),
       h('div', { class: 'form' }, names,
         h('p', { class: 'hint' }, `Estás usando la app como ${me.name}.`),
-        h('button', { class: 'btn ghost', onclick: () => { store.del('me'); S.me = null; S.order = null; start(); } }, 'No soy yo: cambiar de persona'))));
+        h('button', { class: 'btn ghost', onclick: () => { store.del('me'); S.me = null; S.order = null; start(); } }, 'No soy yo: cambiar de persona'),
+        ver && h('p', { class: 'hint ver' }, `Versión ${ver}${S.update ? ' · hay una nueva, recarga para usarla' : ''}`))));
 }
 
 /* ---------- estructura ---------- */
@@ -809,6 +812,12 @@ function nav() {
   return h('nav', { 'aria-label': 'Secciones' }, h('div', { class: 'inner' }, TABS.map(([k, ic, label]) =>
     h('button', { 'aria-current': S.tab === k ? 'page' : null, onclick: () => { if (S.tab !== k) { S.tab = k; scrollTo(0, 0); render(); } } },
       h('span', { class: 'ic' }, ic), label))));
+}
+
+function updateBar() {
+  if (!S.update) return null;
+  return h('button', { class: 'statusbar update', onclick: () => location.reload() }, h('b', null, '✨ Hay una versión nueva'),
+    h('small', null, 'Toca para actualizar. Lo que tengas pendiente de enviar no se pierde.'));
 }
 
 function statusBar() {
@@ -832,7 +841,7 @@ async function render() {
     view = h('div', { class: 'view' }, h('div', { class: 'card' }, h('p', { class: 'err' }, e.offline ? 'Esta sección aún no se había abierto con conexión en este móvil. Ábrela una vez con conexión y después también se verá sin ella.' : e.message)));
   }
   if (token !== S.renderToken) return;
-  $app.replaceChildren(...[statusBar(), view, nav()].filter(Boolean));
+  $app.replaceChildren(...[updateBar(), statusBar(), view, nav()].filter(Boolean));
 }
 
 async function welcome() {
@@ -880,5 +889,11 @@ setInterval(quietRefresh, 45_000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) quietRefresh(); });
 window.addEventListener('online', () => { if (S.me) reload(); });
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  // Si ya había un service worker y toma el control otro nuevo, es que hay versión nueva:
+  // no se recarga sola (podrías estar rellenando algo), se avisa para que lo decida la persona.
+  const had = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (had && !S.update) { S.update = true; render(); } });
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
 start();

@@ -200,3 +200,6 @@ details.more[open] > summary::before { content: '－ '; }
   background: color-mix(in srgb, var(--accent) 14%, var(--card)); color: inherit; font: inherit; cursor: pointer; }
 .statusbar small { display: block; margin-top: 2px; color: var(--muted); font-size: .78rem; }
 .row.pending { opacity: .8; }
+.statusbar.update { background: var(--accent); color: #fff; }
+.statusbar.update small { color: rgba(255, 255, 255, .85); }
+.hint.ver { text-align: center; margin-top: 18px; font-size: .78rem; }

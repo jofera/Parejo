@@ -1,5 +1,7 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { createApi, HttpError } from './api.js';
 
@@ -12,6 +14,23 @@ const TYPES = {
   '.webmanifest': 'application/manifest+json',
   '.json': 'application/json',
 };
+
+// Versión = la de package.json + una huella de los archivos de la interfaz. Así el service worker
+// cambia solo cuando cambia algo de public/, aunque se olvide subir el número de versión.
+function appVersion(root) {
+  let base = '0';
+  try { base = JSON.parse(readFileSync(path.resolve(root, '..', 'package.json'), 'utf8')).version || '0'; } catch { /* sin package.json */ }
+  const hash = createHash('sha1');
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const f = path.join(dir, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (f !== path.join(root, 'sw.js')) hash.update(path.relative(root, f)).update(readFileSync(f));
+    }
+  };
+  try { walk(root); } catch { /* sin carpeta */ }
+  return `${base}-${hash.digest('hex').slice(0, 8)}`;
+}
 
 async function readBody(req) {
   if (req.method === 'GET' || req.method === 'HEAD') return {};
@@ -33,6 +52,7 @@ async function readBody(req) {
 export function createServer({ db, publicDir, now }) {
   const api = createApi({ db, now });
   const root = path.resolve(publicDir);
+  const version = appVersion(root);
 
   return http.createServer(async (req, res) => {
     const send = (status, data, headers = {}) => {
@@ -46,6 +66,7 @@ export function createServer({ db, publicDir, now }) {
     };
     try {
       const url = new URL(req.url, 'http://localhost');
+      if (url.pathname === '/api/version') return send(200, { version });
       if (url.pathname.startsWith('/api/')) {
         const out = await api(req, url, await readBody(req));
         if (out === undefined) return send(404, { error: 'No existe' });
@@ -56,7 +77,8 @@ export function createServer({ db, publicDir, now }) {
       const file = path.resolve(root, rel);
       if (file !== root && !file.startsWith(root + path.sep)) return send(403, { error: 'Prohibido' });
       try {
-        const data = await readFile(file);
+        let data = await readFile(file);
+        if (file === path.join(root, 'sw.js')) data = Buffer.from(data.toString('utf8').replaceAll('__VERSION__', version));
         return send(200, data, {
           'content-type': TYPES[path.extname(file)] || 'application/octet-stream',
           'cache-control': 'no-cache',

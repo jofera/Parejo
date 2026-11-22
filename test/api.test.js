@@ -312,3 +312,12 @@ test('bloquea rutas fuera de public', async () => {
   const res = await fetch(base + '/%2e%2e/package.json');
   assert.ok([403, 404].includes(res.status));
 });
+
+test('la versión se publica y el service worker lleva esa versión', async () => {
+  const v = await call('GET', '/api/version');
+  assert.equal(v.status, 200);
+  assert.match(v.data.version, /^\d+\.\d+\.\d+-[0-9a-f]{8}$/);
+  const sw = await (await fetch(`${base}/sw.js`)).text();
+  assert.ok(sw.includes(`parejo-${v.data.version}`));
+  assert.ok(!sw.includes('__VERSION__'));
+});

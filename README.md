@@ -150,6 +150,8 @@ Sirve si gestionas tu propio servidor DNS con BIND. Ejemplo con `casa.example.co
 
 Fuera de casa, la IP privada solo se alcanza con una VPN. Sin ella, la app instalada sigue abriendo y guarda lo que apuntes para enviarlo al volver.
 
+**Actualizaciones.** La versión de la app (`package.json` + una huella de `public/`) se ve en *Más* y en `/api/version`. Cuando la imagen del servidor cambia, el móvil descarga la interfaz nueva en segundo plano, borra la caché vieja y muestra el aviso «Hay una versión nueva»; al tocarlo se recarga, sin perder lo pendiente de enviar.
+
 La sincronización en segundo plano con la app cerrada no está disponible en Safari ni Firefox, así que lo pendiente se envía al abrir la app o al recuperar la conexión.
 
 ## Home Assistant

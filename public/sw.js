@@ -1,5 +1,7 @@
 // Service worker: guarda la interfaz para que abra al instante.
-const CACHE = 'parejo-v5';
+// El servidor sustituye __VERSION__ por la versión de la app (ver src/app.js): al cambiar la
+// interfaz cambia este archivo, el navegador instala el service worker nuevo y se borra la caché vieja.
+const CACHE = 'parejo-__VERSION__';
 const SHELL = ['/', '/style.css', '/app.js', '/manifest.webmanifest', '/icons/icon.svg'];
 
 self.addEventListener('install', (e) => {
