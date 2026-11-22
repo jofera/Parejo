@@ -194,3 +194,9 @@ details.more[open] > summary::before { content: '－ '; }
 .tile small.grp { display: block; margin-top: 2px; font-size: .72rem; font-weight: 500; color: var(--muted); }
 .row.child { padding-left: 28px; }
 .sub-line { display: flex; justify-content: space-between; gap: 10px; font-size: .82rem; color: var(--muted); padding: 4px 0 0 10px; }
+
+/* Sin conexión y envíos pendientes */
+.statusbar { display: block; width: calc(100% - 32px); margin: 10px 16px 0; padding: 10px 14px; border: 0; border-radius: 12px; text-align: left;
+  background: color-mix(in srgb, var(--accent) 14%, var(--card)); color: inherit; font: inherit; cursor: pointer; }
+.statusbar small { display: block; margin-top: 2px; color: var(--muted); font-size: .78rem; }
+.row.pending { opacity: .8; }

@@ -34,15 +34,27 @@ const S = {
   tab: 'home',
   users: [], tasks: [], notes: {}, active: [], settings: {}, week: null, today: [], order: null,
   skew: 0, histKind: 'week', histOpen: null, rankPeriod: 'week', renderToken: 0,
+  offline: false, snapAt: null, local: null,
 };
+try { S.local = JSON.parse(store.get('ltimer') || 'null'); } catch { S.local = null; }
+if (S.local && S.local.user !== S.me) S.local = null;
 
+// Si el servidor no responde (sin red, fuera de casa, NAS apagado) el error lleva `offline: true`.
 async function api(path, { method = 'GET', body } = {}) {
-  const res = await fetch(path, {
-    method,
-    headers: { 'content-type': 'application/json', ...(S.me ? { 'x-user': String(S.me) } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 6000);
+  const offline = () => Object.assign(new Error('Sin conexión con el servidor.'), { offline: true });
+  let res, data;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: { 'content-type': 'application/json', ...(S.me ? { 'x-user': String(S.me) } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctl.signal,
+    });
+    data = await res.json().catch(() => ({}));
+  } catch { throw offline(); } finally { clearTimeout(timer); }
+  if ([502, 503, 504].includes(res.status)) throw offline();
   if (!res.ok) throw new Error(data.error || 'Algo ha fallado. Inténtalo de nuevo.');
   return data;
 }
@@ -119,6 +131,78 @@ function sheet(build) {
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $layer.replaceChildren(); });
 
+/* ---------- sin conexión ---------- */
+// Lo que se apunta sin llegar al servidor se guarda en el móvil (`outbox`) y se envía solo cuando
+// vuelve la conexión: al abrir la app, al recuperar la red o en el refresco periódico. Cada envío
+// lleva su `client_id` (el servidor ignora un reintento) y el instante real del toque (`at`).
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
+const outbox = {
+  all() { try { return JSON.parse(store.get('outbox') || '[]'); } catch { return []; } },
+  save(list) { if (list.length) store.set('outbox', JSON.stringify(list)); else store.del('outbox'); },
+  mine() { return this.all().filter((o) => o.user === S.me); },
+  add(op) { this.save([...this.all(), op]); },
+  remove(id) { this.save(this.all().filter((o) => o.id !== id)); },
+};
+
+// Registros pendientes como si fueran del servidor (para verlos en «Hoy» y sumarlos al balance).
+function pendingEntries() {
+  return outbox.mine().map((o) => {
+    if (o.kind === 'stop') return { id: `p${o.id}`, pending: true, op: o.id, user_id: o.user, task_id: o.task, start: o.start, end: o.body.at, timed: true, note: o.body.note || null };
+    const b = o.body;
+    let start, end;
+    if (b.from && b.to) { const d = b.day || dateStr(b.at); start = parseLocal(d, b.from); end = parseLocal(d, b.to); }
+    else if (b.day && b.day !== dateStr(b.at)) { start = parseLocal(b.day, '12:00'); end = start + b.minutes * 60000; }
+    else { end = b.at; start = end - b.minutes * 60000; }
+    return { id: `p${o.id}`, pending: true, op: o.id, user_id: o.user, task_id: b.task, start, end, timed: !!(b.from && b.to), note: b.note || null };
+  });
+}
+
+function weekTotals() {
+  const totals = { ...S.week.totals };
+  for (const p of pendingEntries()) {
+    if (p.start >= S.week.from && p.start < S.week.to) totals[p.user_id] = (totals[p.user_id] || 0) + (p.end - p.start);
+  }
+  return totals;
+}
+
+let flushing = false;
+async function flush() {
+  if (flushing || !S.me) return false;
+  flushing = true;
+  let sent = false;
+  try {
+    for (const op of outbox.mine()) {
+      try {
+        await api(op.kind === 'stop' ? '/api/timer/stop' : '/api/entries/quick', { method: 'POST', body: op.body });
+        outbox.remove(op.id);
+        sent = true;
+      } catch (e) {
+        if (e.offline) break;
+        outbox.remove(op.id); // el servidor lo rechaza: reintentar no lo arreglaría
+        if (op.kind !== 'stop') toast(`No se pudo enviar «${op.label}»: ${e.message}`, null, 9000);
+      }
+    }
+  } finally { flushing = false; }
+  return sent;
+}
+
+// Copia de la última pantalla para poder consultarla sin conexión.
+function saveSnapshot() {
+  S.snapAt = Date.now();
+  store.set('snap', JSON.stringify({ me: S.me, at: S.snapAt, users: S.users, tasks: S.tasks, notes: S.notes, settings: S.settings, week: S.week, today: S.today, active: S.active.filter((a) => a.user_id === S.me) }));
+}
+function loadSnapshot() {
+  try {
+    const snap = JSON.parse(store.get('snap') || 'null');
+    if (!snap || snap.me !== S.me) return false;
+    Object.assign(S, { users: snap.users, tasks: snap.tasks, notes: snap.notes, settings: snap.settings, week: snap.week, active: snap.active, snapAt: snap.at });
+    S.order = S.tasks.map((t) => t.id);
+    S.today = snap.today.filter((e) => e.start >= midnight());
+    if (S.week.to <= Date.now()) S.week = { ...S.week, from: S.week.to, to: S.week.to + 7 * 864e5, totals: {} }; // la semana guardada ya terminó
+    return true;
+  } catch { return false; }
+}
+
 /* ---------- datos ---------- */
 async function refresh() {
   const from = midnight();
@@ -137,10 +221,23 @@ async function refresh() {
   S.tasks = [...b.tasks].sort((x, y) => pos(x) - pos(y));
   S.week = week;
   S.today = today.entries;
+  S.offline = false;
+  saveSnapshot();
+}
+
+// Actualiza y, si hay conexión, envía lo pendiente. Sin conexión no molesta: solo lo indica arriba.
+async function sync() {
+  try {
+    await refresh();
+    if (await flush()) await refresh();
+  } catch (e) {
+    if (!e.offline) throw e;
+    S.offline = true;
+  }
 }
 
 async function reload() {
-  try { await refresh(); await render(); } catch (e) { fail(e); }
+  try { await sync(); await render(); } catch (e) { fail(e); }
 }
 
 /* ---------- componentes ---------- */
@@ -175,10 +272,11 @@ function entryRow(e, { showUser = true } = {}) {
     h('span', { class: 'em' }, t.emoji),
     h('span', { class: 'main' },
       h('b', null, fullName(t)),
-      h('span', null, [showUser ? u.name : '', e.timed ? `${timeStr(e.start)}–${timeStr(e.end)}` : '', e.note ? `“${e.note}”` : '', e.edits ? 'editado' : ''].filter(Boolean).join(' · ') || '\u00a0')),
+      h('span', null, [e.pending ? '⏳ pendiente de enviar' : '', showUser ? u.name : '', e.timed ? `${timeStr(e.start)}–${timeStr(e.end)}` : '', e.note ? `“${e.note}”` : '', e.edits ? 'editado' : ''].filter(Boolean).join(' · ') || '\u00a0')),
     h('span', { class: 'dur' }, fmtDur(e.end - e.start)),
     mine && h('span', { class: 'edit', 'aria-hidden': 'true' }, '✎'),
   ];
+  if (e.pending) return h('button', { class: 'row pending', 'aria-label': `Pendiente: ${t.name}`, onclick: () => pendingSheet(e) }, children);
   return mine
     ? h('button', { class: 'row', 'aria-label': `Editar ${t.name}`, onclick: () => editSheet(e) }, children)
     : h('div', { class: 'row' }, children);
@@ -195,39 +293,105 @@ const dayText = (day) => dayLabel(parseLocal(day, '12:00')).toLowerCase();
 
 // `opts`: { note, from, to } (horas 'HH:MM'; si hay horas, `minutes` no se usa).
 async function quickLog(t, minutes, day, opts = {}) {
+  const body = { task: t.id, day, at: serverNow(), client_id: uid() };
+  if (opts.from && opts.to) { body.from = opts.from; body.to = opts.to; } else body.minutes = minutes;
+  if (opts.note) body.note = opts.note;
+  return send(t, body);
+}
+
+// Envía el registro; si no hay conexión lo deja en el móvil para enviarlo después.
+async function send(t, body) {
+  const label = `${t.emoji} ${fullName(t)}`;
   try {
-    const body = { task: t.id, day };
-    if (opts.from && opts.to) { body.from = opts.from; body.to = opts.to; } else body.minutes = minutes;
-    if (opts.note) body.note = opts.note;
     const { entry } = await api('/api/entries/quick', { method: 'POST', body });
-    minutes = Math.round((entry.end - entry.start) / 60000);
+    const minutes = Math.round((entry.end - entry.start) / 60000);
     buzz();
     await refresh(); await render();
-    const when = day && day !== dateStr(serverNow()) ? ` · ${dayText(day)}` : '';
-    toast(`✓ ${t.emoji} ${fullName(t)}${entry.note ? ` (${entry.note})` : ''} · ${fmtDur(minutes * 60000)}${when}`, {
+    const when = body.day && body.day !== dateStr(serverNow()) ? ` · ${dayText(body.day)}` : '';
+    toast(`✓ ${label}${entry.note ? ` (${entry.note})` : ''} · ${fmtDur(minutes * 60000)}${when}`, {
       label: 'Deshacer',
       fn: () => api(`/api/entries/${entry.id}/undo`, { method: 'POST' }).then(reload).catch(fail),
     });
-  } catch (e) { fail(e); }
+  } catch (e) {
+    if (!e.offline) return fail(e);
+    const op = { id: uid(), user: S.me, kind: 'quick', body, label };
+    outbox.add(op);
+    S.offline = true;
+    buzz();
+    await render();
+    const pe = pendingEntries().find((x) => x.op === op.id);
+    toast(`⏳ ${label} · ${fmtDur(pe.end - pe.start)}. Guardado en el móvil: se enviará al volver la conexión.`, {
+      label: 'Deshacer',
+      fn: () => { outbox.remove(op.id); render(); },
+    }, 9000);
+  }
 }
 
 async function startTimer(t, note) {
   try {
+    if (S.local) await stopLocal(true);
     const r = await api('/api/timer/start', { method: 'POST', body: { task: t.id, note } });
     buzz();
     await refresh(); await render();
     toast(r.stopped?.entry ? `Cronómetro de ${t.emoji} ${t.name} en marcha. Guardé la tarea anterior.` : `Cronómetro de ${t.emoji} ${t.name} en marcha`);
-  } catch (e) { fail(e); }
+  } catch (e) {
+    if (e.offline) return startLocalTimer(t, note);
+    fail(e);
+  }
+}
+
+// Sin conexión el cronómetro corre en el móvil; al pararlo se apunta como cualquier otro registro.
+function startLocalTimer(t, note) {
+  S.local = { user: S.me, task: t.id, start: serverNow(), note: note || '' };
+  store.set('ltimer', JSON.stringify(S.local));
+  S.offline = true;
+  buzz();
+  render();
+  toast(`Cronómetro de ${t.emoji} ${t.name} en marcha. Sin conexión: se guardará en el móvil.`, null, 7000);
+}
+
+async function stopLocal(quiet) {
+  const lt = S.local;
+  if (!lt) return;
+  S.local = null;
+  store.del('ltimer');
+  const dur = serverNow() - lt.start;
+  if (dur < 30_000) { if (!quiet) { toast('Cronómetro descartado (duró menos de 30 s)'); render(); } return; }
+  const body = { task: lt.task, minutes: Math.min(720, Math.max(1, Math.round(dur / 60000))), day: dateStr(serverNow()), at: serverNow(), client_id: uid() };
+  if (lt.note) body.note = lt.note;
+  await send(task(lt.task), body);
 }
 
 async function stopTimer() {
+  if (S.local) return stopLocal();
+  const mine = S.active.find((a) => a.user_id === S.me);
+  const at = serverNow();
   try {
-    const r = await api('/api/timer/stop', { method: 'POST' });
+    const r = await api('/api/timer/stop', { method: 'POST', body: { at } });
     buzz();
     await refresh(); await render();
     if (r.discarded) toast('Cronómetro descartado (duró menos de 30 s)');
     else toast(`✓ Guardado: ${task(r.entry.task_id).emoji} ${task(r.entry.task_id).name} · ${fmtDur(r.entry.end - r.entry.start)}`);
-  } catch (e) { fail(e); }
+  } catch (e) {
+    if (!e.offline || !mine) return fail(e);
+    const t = task(mine.task_id);
+    outbox.add({ id: uid(), user: S.me, kind: 'stop', body: { at }, task: mine.task_id, start: mine.start, label: `${t.emoji} ${fullName(t)}` });
+    S.offline = true;
+    await render();
+    toast('⏳ Guardado en el móvil: se enviará al volver la conexión.', null, 7000);
+  }
+}
+
+// Un registro pendiente aún no está en el servidor: se puede enviar ya o descartar.
+function pendingSheet(e) {
+  const t = task(e.task_id);
+  sheet((close) => [
+    h('h2', null, `${t.emoji} ${fullName(t)}`),
+    h('p', { class: 'hint' }, `${fmtDur(e.end - e.start)} · todavía no se ha enviado al servidor. Se enviará solo cuando haya conexión.`),
+    h('div', { class: 'stack', style: 'margin-top:14px' },
+      h('button', { class: 'btn', onclick: () => { close(); reload(); } }, 'Intentar enviar ahora'),
+      h('button', { class: 'btn ghost danger', onclick: () => { outbox.remove(e.op); close(); render(); } }, 'Descartar este registro')),
+  ]);
 }
 
 // Hoja de una tarea: un toque en la duración la guarda. Arriba se elige el día (por defecto, hoy).
@@ -397,9 +561,12 @@ function editSheet(e) {
 /* ---------- vistas ---------- */
 function homeView() {
   const me = user(S.me), o = other();
-  const mine = S.active.find((a) => a.user_id === S.me);
-  const theirs = S.active.find((a) => a.user_id === o.id);
-  const totals = S.week.totals;
+  const stopPending = outbox.mine().some((p) => p.kind === 'stop');
+  const mine = S.local
+    ? { task_id: S.local.task, start: S.local.start }
+    : stopPending ? null : S.active.find((a) => a.user_id === S.me);
+  const theirs = S.offline ? null : S.active.find((a) => a.user_id === o.id);
+  const totals = weekTotals();
 
   const nodes = [
     h('div', { class: 'top' }, h('h1', null, `Hola, ${me.name}`), h('span', { class: 'sub' }, new Intl.DateTimeFormat('es-ES', { weekday: 'long', day: 'numeric', month: 'short' }).format(Date.now()))),
@@ -429,7 +596,7 @@ function homeView() {
         ? h('button', { class: 'tile', onclick: () => groupSheet(t) }, h('span', { class: 'em' }, t.emoji), t.name, h('small', { class: 'grp' }, `${liveChildren(t).length} partes ▸`))
         : h('button', { class: 'tile', onclick: () => taskSheet(t) }, h('span', { class: 'em' }, t.emoji), t.name)))));
 
-  const done = S.today.filter((e) => e.end);
+  const done = [...pendingEntries().filter((p) => p.start >= midnight()), ...S.today.filter((e) => e.end)];
   nodes.push(h('section', { class: 'card' },
     h('h2', null, 'Hoy'),
     done.length ? done.map((e) => entryRow(e)) : h('p', { class: 'empty-note' }, 'Aún no hay nada apuntado hoy.')));
@@ -604,6 +771,16 @@ function nav() {
       h('span', { class: 'ic' }, ic), label))));
 }
 
+function statusBar() {
+  const n = outbox.mine().length;
+  if (!S.offline && !n) return null;
+  const parts = [];
+  if (S.offline) parts.push(`📴 Sin conexión${S.snapAt ? ` · datos de las ${timeStr(S.snapAt)}${dateStr(S.snapAt) === dateStr(Date.now()) ? '' : ` del ${dayText(dateStr(S.snapAt))}`}` : ''}`);
+  if (n) parts.push(`⏳ ${n} ${n === 1 ? 'pendiente' : 'pendientes'} de enviar`);
+  return h('button', { class: 'statusbar', onclick: () => reload() }, h('b', null, parts.join(' · ')),
+    h('small', null, S.offline ? 'Lo que apuntes se enviará al volver. Toca para reintentar.' : 'Toca para enviar ahora.'));
+}
+
 async function render() {
   if (!S.me) return;
   const token = ++S.renderToken;
@@ -611,14 +788,21 @@ async function render() {
   try {
     view = await ({ home: homeView, history: historyView, ranking: rankingView, more: moreView }[S.tab])();
   } catch (e) {
-    view = h('div', { class: 'view' }, h('div', { class: 'card' }, h('p', { class: 'err' }, e.message)));
+    if (e.offline) S.offline = true;
+    view = h('div', { class: 'view' }, h('div', { class: 'card' }, h('p', { class: 'err' }, e.offline ? 'Esta sección necesita conexión con el servidor. Vuelve a abrirla cuando estés en casa o tengas conexión.' : e.message)));
   }
   if (token !== S.renderToken) return;
-  $app.replaceChildren(view, nav());
+  $app.replaceChildren(...[statusBar(), view, nav()].filter(Boolean));
 }
 
 async function welcome() {
-  const { users } = await api('/api/users');
+  let users;
+  try { ({ users } = await api('/api/users')); } catch (e) {
+    $app.replaceChildren(h('div', { class: 'welcome' }, h('h1', null, 'Sin conexión'),
+      h('p', { class: 'hint' }, 'La primera vez hace falta conexión con el servidor para elegir quién eres.'),
+      h('button', { class: 'who-btn', style: 'background:var(--accent)', onclick: () => start() }, 'Reintentar')));
+    return;
+  }
   $app.replaceChildren(h('div', { class: 'welcome' },
     h('h1', null, '¿Quién eres?'),
     h('p', { class: 'hint' }, 'Solo hace falta elegirlo una vez en este móvil.'),
@@ -627,9 +811,17 @@ async function welcome() {
 
 async function start() {
   if (!S.me) return welcome();
-  try { await refresh(); } catch (e) {
+  // Se enseña enseguida la última copia guardada; si hay conexión, se actualiza en cuanto responda el servidor.
+  if (loadSnapshot()) await render();
+  try { await sync(); } catch (e) {
     if (/quién eres/i.test(e.message)) { S.me = null; store.del('me'); return welcome(); }
     $app.replaceChildren(h('div', { class: 'view' }, h('div', { class: 'card' }, h('p', { class: 'err' }, e.message))));
+    return;
+  }
+  if (S.offline && !S.tasks.length) {
+    $app.replaceChildren(h('div', { class: 'welcome' }, h('h1', null, 'Sin conexión'),
+      h('p', { class: 'hint' }, 'Aún no hay datos guardados en este móvil. Ábrela una vez con conexión.'),
+      h('button', { class: 'who-btn', style: 'background:var(--accent)', onclick: () => start() }, 'Reintentar')));
     return;
   }
   await render();
@@ -646,6 +838,7 @@ const quietRefresh = () => {
 };
 setInterval(quietRefresh, 45_000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) quietRefresh(); });
+window.addEventListener('online', () => { if (S.me) reload(); });
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 start();

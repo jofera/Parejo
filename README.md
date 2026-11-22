@@ -14,6 +14,7 @@ App para dos personas que registra el **tiempo** dedicado a las tareas del hogar
 - Apuntar una tarea por **duración**, en dos toques. Un día distinto de hoy se elige con «Ayer» u «Otro día».
 - Opcional, en «Más detalles»: un **comentario** (cena, lasaña…; la app sugiere los que más usas en cada tarea) y la **hora de inicio y de fin** exactas.
 - **Grupos de tareas**: una tarea puede tener subtareas (p. ej. «Ropa» → poner la lavadora, tender, recoger, doblar, planchar). Se apunta siempre en la subtarea; el ranking suma por grupo y detalla cada parte. Se crean desde *Más → Tareas* eligiendo «Dentro de».
+- **Sin conexión**: si el móvil no llega al servidor, lo que apuntas (también con cronómetro) se guarda en el móvil, se ve marcado como pendiente y se envía solo al volver la conexión o al reabrir la app, sin duplicados. La última pantalla queda guardada para consultarla. Para que la app *abra* sin conexión hace falta servirla por HTTPS (ver abajo).
 - Balance de la semana siempre visible en la pantalla de inicio.
 - Historial por semanas, meses y años, con el detalle de cada periodo.
 - Ranking simple (semana, mes, año y total), más el desglose por tarea.
@@ -21,7 +22,7 @@ App para dos personas que registra el **tiempo** dedicado a las tareas del hogar
 - La semana empieza en lunes.
 - Integración con Home Assistant (ver abajo): sensores, resumen semanal por notificación y registro desde NFC o botones.
 
-Fuera de esta versión: asignación automática de tareas, pesos por esfuerzo, varios hogares, notificaciones push propias y uso sin conexión.
+Fuera de esta versión: asignación automática de tareas, pesos por esfuerzo, varios hogares y notificaciones push propias.
 
 ## Instalación
 
@@ -78,6 +79,15 @@ Usa el `docker-compose.yml` del repositorio.
 | `DATA_DIR` | Carpeta de la base de datos (`./data` sin Docker, `/data` en la imagen). |
 
 Los datos están en `reparto.db` (SQLite). **Copia de seguridad = copiar esa carpeta** (con la app parada, o los tres archivos `reparto.db*`). Con Docker, la carpeta del NAS debe poder escribirla el usuario 1000 (`sudo chown 1000:1000 data`).
+
+## Uso sin conexión y HTTPS
+
+Los navegadores solo permiten *service workers* (lo que hace que una web abra sin red) en páginas HTTPS o en `localhost`. Por `http://IP-DEL-SERVIDOR:3000` la app funciona y guarda en el móvil lo que apuntes si se pierde la conexión, pero **no puede abrirse sin conexión** (y Chrome no la ofrecerá como app instalada). Para eso, sírvela por HTTPS detrás de un proxy inverso con un certificado de confianza:
+
+- Con un dominio propio cuyo DNS tenga API: un subdominio apuntando a la IP privada del servidor y un proxy (Caddy, Nginx Proxy Manager…) que obtenga el certificado con el reto DNS de Let's Encrypt. No hace falta abrir puertos ni instalar nada en los móviles.
+- Con [Tailscale](https://tailscale.com/kb/1153/enabling-https/): certificado de confianza para el nombre `*.ts.net` y, además, acceso desde fuera de casa sin abrir puertos.
+
+La sincronización en segundo plano con la app cerrada no está disponible en Safari ni Firefox, así que lo pendiente se envía al abrir la app o al recuperar la conexión.
 
 ## Home Assistant
 

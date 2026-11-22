@@ -88,6 +88,18 @@ export function createApi({ db, now = () => Date.now() }) {
     if (end > now() + 5 * MIN) throw bad('No se puede apuntar en el futuro.');
     if (now() - start > MAX_AGE_MS) throw bad('Ese día es demasiado antiguo.');
   }
+  // Instante real del toque. Si el móvil estuvo sin conexión llega con retraso (`at`); nunca en el futuro.
+  const atOf = (v) => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    if (!Number.isFinite(n)) throw bad('Instante no válido');
+    return Math.min(Math.round(n), now());
+  };
+  const clientIdOf = (v) => {
+    if (v === undefined || v === null || v === '') return null;
+    if (!/^[\w-]{8,64}$/.test(String(v))) throw bad('Identificador no válido');
+    return String(v);
+  };
   const activeOf = (userId) => get(`${ENTRY_SQL} WHERE user_id = ? AND end_ts IS NULL AND deleted = 0`, userId);
 
   function totalsBetween(from, to) {
@@ -265,10 +277,10 @@ export function createApi({ db, now = () => Date.now() }) {
   });
 
   // ---- Registro de tiempo --------------------------------------------------------------------
-  function stopActive(userId, note) {
+  function stopActive(userId, note, at) {
     const a = activeOf(userId);
     if (!a) return null;
-    const t = now();
+    const t = at != null && at >= a.start_ts ? at : now();
     if (t - a.start_ts < 30_000) {
       run('DELETE FROM entries WHERE id = ?', a.id); // arranque accidental: no se guarda
       return { discarded: true };
@@ -292,7 +304,7 @@ export function createApi({ db, now = () => Date.now() }) {
 
   route('POST', '/api/timer/stop', (req, _q, body) => {
     const u = me(req);
-    const res = stopActive(u.id, body?.note);
+    const res = stopActive(u.id, body?.note, atOf(body?.at));
     if (!res) throw bad('No tienes ningún cronómetro en marcha.');
     return res;
   });
@@ -306,7 +318,12 @@ export function createApi({ db, now = () => Date.now() }) {
     const u = me(req);
     const task = leafById(body.task);
     const note = noteOf(body.note);
-    const t = now();
+    const cid = clientIdOf(body.client_id);
+    if (cid) {
+      const dup = get(`${ENTRY_SQL} WHERE user_id = ? AND client_id = ?`, u.id, cid);
+      if (dup) return { entry: entryOut(dup), duplicate: true }; // reintento de algo ya guardado
+    }
+    const t = atOf(body.at) ?? now();
     let start;
     let end;
     let source = 'quick';
@@ -331,8 +348,8 @@ export function createApi({ db, now = () => Date.now() }) {
     }
     checkRange(start, end);
     const r = run(
-      `INSERT INTO entries (user_id, task_id, start_ts, end_ts, note, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      u.id, task.id, start, end, note, source, t,
+      `INSERT INTO entries (user_id, task_id, start_ts, end_ts, note, source, created_at, client_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      u.id, task.id, start, end, note, source, now(), cid,
     );
     return { entry: entryOut(get(`${ENTRY_SQL} WHERE id = ?`, r.lastInsertRowid)) };
   });

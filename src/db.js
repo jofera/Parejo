@@ -87,6 +87,12 @@ export function openDb(file, { users = 'Persona 1,Persona 2' } = {}) {
     db.exec('ALTER TABLE tasks ADD COLUMN parent_id INTEGER REFERENCES tasks(id)');
   }
 
+  if (!db.prepare('PRAGMA table_info(entries)').all().some((c) => c.name === 'client_id')) {
+    db.exec('ALTER TABLE entries ADD COLUMN client_id TEXT');
+  }
+  // Identificador que genera el móvil al apuntar: un reintento no duplica el registro.
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS entries_client ON entries(user_id, client_id) WHERE client_id IS NOT NULL');
+
   if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
     const names = users.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 2);
     while (names.length < 2) names.push(`Persona ${names.length + 1}`);

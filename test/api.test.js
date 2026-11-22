@@ -274,6 +274,40 @@ test('migra una base de datos anterior sin grupos', async () => {
   db.close();
 });
 
+test('apuntar con retraso (`at`) y reintentos sin duplicar (`client_id`)', async () => {
+  const at = clock - 90 * 60_000; // el toque fue hace hora y media
+  const body = { task: 1, minutes: 30, at, client_id: 'abc12345-aaaa', note: 'Paseo largo' };
+  const a = await call('POST', '/api/entries/quick', 1, body);
+  assert.equal(a.status, 200);
+  assert.equal(a.data.entry.end, at);
+  assert.equal(a.data.entry.start, at - 30 * 60_000);
+  assert.ok(!a.data.duplicate);
+
+  const b = await call('POST', '/api/entries/quick', 1, body); // el móvil reenvía
+  assert.equal(b.status, 200);
+  assert.equal(b.data.duplicate, true);
+  assert.equal(b.data.entry.id, a.data.entry.id);
+
+  // otra persona puede usar el mismo identificador; un identificador raro se rechaza
+  assert.equal((await call('POST', '/api/entries/quick', 2, body)).data.duplicate, undefined);
+  assert.equal((await call('POST', '/api/entries/quick', 1, { ...body, client_id: 'x' })).status, 400);
+  // `at` en el futuro se recorta a ahora; no es una forma de apuntar en el futuro
+  const f = await call('POST', '/api/entries/quick', 1, { task: 1, minutes: 10, at: clock + 5 * 3600_000 });
+  assert.equal(f.data.entry.end, clock);
+  assert.equal((await call('POST', '/api/entries/quick', 1, { task: 1, minutes: 10, at: 'ayer' })).status, 400);
+});
+
+test('parar el cronómetro con retraso (`at`)', async () => {
+  clock += 60_000;
+  assert.equal((await call('POST', '/api/timer/start', 1, { task: 2 })).status, 200);
+  const stopAt = clock + 25 * 60_000;
+  clock += 40 * 60_000; // el móvil sincroniza mucho después de haber pulsado «Terminar»
+  const r = await call('POST', '/api/timer/stop', 1, { at: stopAt, note: 'Sin conexión' });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.entry.end - r.data.entry.start, 25 * 60_000);
+  assert.equal(r.data.entry.note, 'Sin conexión');
+});
+
 test('bloquea rutas fuera de public', async () => {
   const res = await fetch(base + '/%2e%2e/package.json');
   assert.ok([403, 404].includes(res.status));
