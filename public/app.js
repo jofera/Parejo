@@ -144,14 +144,54 @@ function toast(msg, action, ms = 6000) {
 const hideToast = () => $toast.classList.remove('show');
 const fail = (e) => toast(e.message || String(e), null, 4500);
 
+// Hojas inferiores. Se cierran con ✕, tocando fuera, deslizando hacia abajo, con Escape o con
+// «atrás» en Android: abrir una hoja añade una entrada al historial y cerrarla la quita.
+let skipPop = false;
+function closeSheet() {
+  if (!$layer.firstChild) return;
+  $layer.replaceChildren();
+  if (history.state?.sheet) { skipPop = true; history.back(); }
+}
+window.addEventListener('popstate', () => {
+  if (skipPop) { skipPop = false; return; }
+  $layer.replaceChildren();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
+
 function sheet(build) {
   hideToast();
-  const close = () => $layer.replaceChildren();
-  const el = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'grab' }), build(close));
+  const close = closeSheet;
+  const el = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' },
+    h('div', { class: 'grab' }),
+    h('button', { class: 'x', 'aria-label': 'Cerrar', onclick: close }, '✕'),
+    build(close));
+  swipeToClose(el, close);
+  if (!history.state?.sheet || skipPop) history.pushState({ sheet: true }, '');
   $layer.replaceChildren(h('div', { class: 'backdrop', onclick: close }), el);
   return close;
 }
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $layer.replaceChildren(); });
+
+// Arrastrar la hoja hacia abajo (estando arriba del todo) la cierra; si no se arrastra lo bastante, vuelve.
+function swipeToClose(el, close) {
+  let y0 = null, dy = 0;
+  el.addEventListener('touchstart', (e) => {
+    const field = /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName);
+    y0 = el.scrollTop <= 0 && !field && e.touches.length === 1 ? e.touches[0].clientY : null;
+    dy = 0;
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    if (y0 == null) return;
+    dy = Math.max(0, e.touches[0].clientY - y0);
+    if (dy > 6) { el.style.transition = 'none'; el.style.transform = `translateY(${dy}px)`; }
+  }, { passive: true });
+  el.addEventListener('touchend', () => {
+    if (y0 == null) return;
+    y0 = null;
+    if (dy > 90) { close(); return; }
+    el.style.transition = 'transform .18s ease';
+    el.style.transform = '';
+  });
+}
 
 /* ---------- sin conexión ---------- */
 // Lo que se apunta sin llegar al servidor se guarda en el móvil (`outbox`) y se envía solo cuando
@@ -518,7 +558,8 @@ function taskSelect(selectedId) {
     h('option', { value: t.id, selected: t.id === selectedId }, `${t.emoji} ${fullName(t)}`)));
 }
 
-const REASONS = ['Me equivoqué de tarea', 'Duración incorrecta', 'Día incorrecto', 'Se me olvidó parar', 'Añadir comentario'];
+// Motivo que se anota si no se escribe ninguno, según lo que se ha cambiado.
+const AUTO_REASON = { task: 'Me equivoqué de tarea', time: 'Horas corregidas', minutes: 'Duración incorrecta', day: 'Día incorrecto', note: 'Comentario' };
 const changeText = (key, c) => {
   if (key === 'task') return `Tarea: ${task(c.from).name} → ${task(c.to).name}`;
   if (key === 'minutes') return `Duración: ${fmtDur(c.from * 60000)} → ${fmtDur(c.to * 60000)}`;
@@ -530,6 +571,9 @@ const changeText = (key, c) => {
   return 'Registro eliminado';
 };
 
+// Editar un registro. Pensada para caber en el móvil sin scroll: las horas solo se muestran si el
+// registro las tiene o se piden, el motivo es opcional (si no se escribe, se deduce de lo cambiado)
+// y el historial de cambios se abre en la misma hoja en lugar del formulario.
 function editSheet(e) {
   sheet((close) => {
     const err = h('p', { class: 'err' });
@@ -538,58 +582,72 @@ function editSheet(e) {
     const sel = taskSelect(e.task_id);
     const mins = h('input', { type: 'number', inputmode: 'numeric', min: '1', max: '720', value: curMin });
     const date = h('input', { type: 'date', value: curDay, max: dateStr(serverNow()) });
-    const noteIn = h('input', { type: 'text', maxlength: '200', autocomplete: 'off', value: e.note || '', placeholder: 'Comentario (opcional)' });
+    const noteIn = h('input', { type: 'text', maxlength: '200', autocomplete: 'off', value: e.note || '', placeholder: 'Opcional' });
     const curFrom = e.timed ? timeStr(e.start) : '';
     const curTo = e.timed ? timeStr(e.end) : '';
     const fromIn = h('input', { type: 'time', value: curFrom, 'aria-label': 'Hora de inicio' });
     const toIn = h('input', { type: 'time', value: curTo, 'aria-label': 'Hora de fin' });
-    const reason = h('input', { type: 'text', placeholder: 'Motivo del cambio', maxlength: '300', autocomplete: 'off' });
-    const history = h('div');
+    const reason = h('input', { type: 'text', placeholder: 'Opcional', maxlength: '300', autocomplete: 'off' });
+
+    const times = h('div', { class: 'form', hidden: !e.timed },
+      h('div', { class: 'two' }, h('label', null, 'Inicio', fromIn), h('label', null, 'Fin', toIn)),
+      h('p', { class: 'hint' }, 'Si indicas las horas, mandan sobre la duración.'));
+    const showTimes = h('button', { class: 'link left', hidden: e.timed, onclick: () => { times.hidden = false; showTimes.hidden = true; fromIn.focus(); } }, '⏱ Indicar horas');
+
     let confirmDelete = false;
+    const del = h('button', { class: 'btn danger', onclick: async () => {
+      if (!confirmDelete) { confirmDelete = true; del.textContent = '¿Seguro?'; return; }
+      try {
+        await api(`/api/entries/${e.id}`, { method: 'DELETE', body: { reason: reason.value.trim() || 'Registro eliminado' } });
+        close(); await reload(); toast('Registro eliminado');
+      } catch (x) { err.textContent = x.message; }
+    } }, '🗑 Eliminar');
+
+    const save = h('button', { class: 'btn', onclick: async () => {
+      err.textContent = '';
+      const body = {};
+      if (Number(sel.value) !== e.task_id) body.task = Number(sel.value);
+      if (noteIn.value.trim() !== (e.note || '')) body.note = noteIn.value;
+      if (fromIn.value !== curFrom || toIn.value !== curTo) {
+        if (!fromIn.value || !toIn.value) { err.textContent = 'Indica la hora de inicio y la de fin, o deja las dos vacías.'; return; }
+        body.from = fromIn.value; body.to = toIn.value;
+      } else if (Math.round(Number(mins.value)) !== curMin) body.minutes = Number(mins.value);
+      if (date.value && date.value !== curDay) body.day = date.value;
+      const changed = Object.keys(body).map((k) => (k === 'from' ? 'time' : k)).filter((k) => k !== 'to');
+      if (!changed.length) { err.textContent = 'No has cambiado nada.'; return; }
+      body.reason = reason.value.trim() || changed.map((k) => AUTO_REASON[k]).join(' · ');
+      save.disabled = true;
+      try { await api(`/api/entries/${e.id}`, { method: 'PATCH', body }); close(); await reload(); toast('✓ Cambio guardado'); }
+      catch (x) { err.textContent = x.message; save.disabled = false; }
+    } }, 'Guardar cambios');
+
+    const form = h('div', { class: 'form', style: 'margin-top:12px' },
+      h('label', null, 'Tarea', sel),
+      h('label', null, 'Comentario', noteIn),
+      h('div', { class: 'two' }, h('label', null, 'Duración (minutos)', mins), h('label', null, 'Día', date)),
+      showTimes, times,
+      h('label', null, 'Motivo del cambio', reason),
+      err,
+      h('div', { class: 'actions' }, save, del));
+
+    // Historial de cambios: se carga aparte y se ve en lugar del formulario.
+    const histList = h('div');
+    const hist = h('div', { hidden: true, style: 'margin-top:12px' },
+      histList,
+      h('button', { class: 'btn ghost', style: 'margin-top:14px', onclick: () => { hist.hidden = true; form.hidden = false; } }, '← Volver'));
+    const histLink = h('button', { class: 'link', hidden: true, onclick: () => { form.hidden = true; hist.hidden = false; } });
+    form.append(histLink);
     api(`/api/entries/${e.id}/edits`).then(({ edits }) => {
       if (!edits.length) return;
-      history.append(h('h3', null, 'Historial de cambios'), ...edits.map((x) => h('div', { class: 'hist-item' },
+      histLink.textContent = `Ver cambios (${edits.length})`;
+      histLink.hidden = false;
+      histList.append(...edits.map((x) => h('div', { class: 'hist-item' },
         h('div', { class: 'when' }, `${user(x.user_id).name} · ${dayLabel(x.at)} ${timeStr(x.at)}`),
         Object.entries(x.changes).map(([k, c]) => h('div', null, changeText(k, c))),
         h('div', null, h('em', null, `“${x.reason}”`)))));
     }).catch(() => {});
 
-    const del = h('button', { class: 'btn danger', onclick: async () => {
-      if (reason.value.trim().length < 3) { err.textContent = 'Indica el motivo para eliminarlo.'; reason.focus(); return; }
-      if (!confirmDelete) { confirmDelete = true; del.textContent = 'Pulsa otra vez para confirmar'; return; }
-      try { await api(`/api/entries/${e.id}`, { method: 'DELETE', body: { reason: reason.value } }); close(); await reload(); toast('Registro eliminado'); }
-      catch (x) { err.textContent = x.message; }
-    } }, 'Eliminar registro');
-
-    return [
-      h('h2', null, `${task(e.task_id).emoji} Editar registro`),
-      h('p', { class: 'hint' }, 'Los cambios quedan anotados con su motivo.'),
-      h('div', { class: 'form', style: 'margin-top:12px' },
-        h('label', null, 'Tarea', sel),
-        h('label', null, 'Comentario', noteIn),
-        h('div', { class: 'two' }, h('label', null, 'Duración (minutos)', mins), h('label', null, 'Día', date)),
-        h('div', { class: 'two' }, h('label', null, 'Inicio', fromIn), h('label', null, 'Fin', toIn)),
-        h('p', { class: 'hint' }, 'Si indicas las horas, mandan sobre la duración.'),
-        h('div', { class: 'chips' }, REASONS.map((r) => h('button', { class: 'chip', onclick: () => { reason.value = r; } }, r))),
-        h('label', null, '¿Por qué lo cambias?', reason),
-        err,
-        h('button', { class: 'btn', onclick: async (ev) => {
-          const body = { reason: reason.value };
-          if (Number(sel.value) !== e.task_id) body.task = Number(sel.value);
-          if (noteIn.value.trim() !== (e.note || '')) body.note = noteIn.value;
-          if (fromIn.value !== curFrom || toIn.value !== curTo) {
-            if (!fromIn.value || !toIn.value) { err.textContent = 'Indica la hora de inicio y la de fin, o deja las dos vacías.'; return; }
-            body.from = fromIn.value; body.to = toIn.value;
-          } else if (Math.round(Number(mins.value)) !== curMin) body.minutes = Number(mins.value);
-          if (date.value && date.value !== curDay) body.day = date.value;
-          const btn = ev.currentTarget;
-          btn.disabled = true;
-          try { await api(`/api/entries/${e.id}`, { method: 'PATCH', body }); close(); await reload(); toast('✓ Cambio guardado'); }
-          catch (x) { err.textContent = x.message; btn.disabled = false; }
-        } }, 'Guardar cambios'),
-        del),
-      history,
-    ];
+    return [h('h2', null, `${task(e.task_id).emoji} Editar registro`), form, hist];
   });
 }
 

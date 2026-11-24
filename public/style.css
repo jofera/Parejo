@@ -37,6 +37,7 @@ body {
 button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; border: 0; background: none; padding: 0; }
 h1, h2, h3, p { margin: 0; }
+[hidden] { display: none !important; }
 
 #app { max-width: 540px; margin: 0 auto; padding: 14px 16px calc(92px + env(safe-area-inset-bottom)); min-height: 100vh; }
 .view { display: grid; gap: 14px; animation: fade .18s ease; }
@@ -137,11 +138,15 @@ nav button[aria-current="page"] .ic { filter: none; opacity: 1; }
 .task-line .split { height: 8px; }
 
 /* Formularios */
-label { display: grid; gap: 4px; font-size: .85rem; color: var(--muted); font-weight: 600; }
-input, select { background: var(--bg); border: 1.5px solid var(--line); border-radius: 12px; padding: 12px; width: 100%; color: var(--ink); min-height: 48px; }
+label { display: grid; gap: 4px; min-width: 0; font-size: .85rem; color: var(--muted); font-weight: 600; }
+input, select { background: var(--bg); border: 1.5px solid var(--line); border-radius: 12px; padding: 12px; width: 100%; color: var(--ink); min-height: 48px; min-width: 0; }
+/* iOS da a los campos de fecha y hora un ancho mínimo y un estilo propios: sin esto se salen de su
+   columna, centran el texto y no respetan la altura de los demás campos. */
+input[type="date"], input[type="time"] { -webkit-appearance: none; appearance: none; height: 48px; display: block; }
+input::-webkit-date-and-time-value { text-align: left; min-height: 1.4em; }
 input:focus-visible, select:focus-visible, button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
 .form { display: grid; gap: 12px; }
-.two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
 .btn { padding: 15px; border-radius: 14px; font-weight: 700; background: var(--accent); color: var(--accent-ink); width: 100%; font-size: 1.05rem; }
 .btn.ghost { background: var(--soft); color: var(--accent); }
 .btn.danger { background: transparent; color: var(--danger); border: 1.5px solid var(--line); font-weight: 650; }
@@ -151,6 +156,7 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 3px s
 .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--card); }
 .hint { color: var(--muted); font-size: .85rem; }
 .err { color: var(--danger); font-weight: 600; font-size: .92rem; }
+.err:empty { display: none; }
 
 /* Hoja inferior */
 #layer .backdrop { position: fixed; inset: 0; background: rgb(10 20 17 / 45%); z-index: 20; animation: fadeb .15s ease; }
@@ -158,12 +164,16 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 3px s
 #layer .sheet {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; max-width: 540px; margin: 0 auto;
   background: var(--card); border-radius: 24px 24px 0 0; padding: 8px 18px calc(22px + env(safe-area-inset-bottom));
-  max-height: 92vh; overflow-y: auto; animation: up .22s cubic-bezier(.2,.8,.2,1);
+  max-height: 92vh; max-height: 92dvh; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; animation: up .22s cubic-bezier(.2,.8,.2,1);
   box-shadow: 0 -10px 40px rgb(0 0 0 / 22%);
 }
 @keyframes up { from { transform: translateY(40px); opacity: 0; } }
 .sheet .grab { width: 40px; height: 5px; border-radius: 3px; background: var(--line); margin: 4px auto 12px; }
-.sheet h2 { font-size: 1.25rem; margin-bottom: 4px; }
+.sheet h2 { font-size: 1.25rem; margin-bottom: 4px; padding-right: 44px; }
+.sheet .x { position: absolute; top: 14px; right: 14px; width: 36px; height: 36px; border-radius: 50%; background: var(--soft); color: var(--muted); font-size: 1rem; font-weight: 700; display: grid; place-items: center; }
+.sheet .actions { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+.sheet .actions .btn.danger { width: auto; padding: 15px 18px; }
+.link.left { text-align: left; padding: 2px 0; justify-self: start; width: auto; }
 .sheet h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 14px 0 8px; }
 .mins { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .mins button { padding: 16px 4px; border-radius: 14px; background: var(--soft); font-weight: 700; font-size: 1rem; }
