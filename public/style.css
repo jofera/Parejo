@@ -161,6 +161,9 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 3px s
 /* Hoja inferior */
 #layer .backdrop { position: fixed; inset: 0; background: rgb(10 20 17 / 45%); z-index: 20; animation: fadeb .15s ease; }
 @keyframes fadeb { from { opacity: 0; } }
+/* Con una hoja abierta, la pantalla de detrás no se desplaza. */
+html:has(#layer .sheet), html:has(#layer .sheet) body { overflow: hidden; overscroll-behavior: none; }
+#layer .backdrop { touch-action: none; }
 #layer .sheet {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; max-width: 540px; margin: 0 auto;
   background: var(--card); border-radius: 24px 24px 0 0; padding: 8px 18px calc(22px + env(safe-area-inset-bottom));

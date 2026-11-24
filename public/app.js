@@ -167,7 +167,9 @@ function sheet(build) {
     build(close));
   swipeToClose(el, close);
   if (!history.state?.sheet || skipPop) history.pushState({ sheet: true }, '');
-  $layer.replaceChildren(h('div', { class: 'backdrop', onclick: close }), el);
+  const backdrop = h('div', { class: 'backdrop', onclick: close });
+  backdrop.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+  $layer.replaceChildren(backdrop, el);
   return close;
 }
 
@@ -179,11 +181,14 @@ function swipeToClose(el, close) {
     y0 = el.scrollTop <= 0 && !field && e.touches.length === 1 ? e.touches[0].clientY : null;
     dy = 0;
   }, { passive: true });
+  // No pasivo para poder cortar el gesto: si no, iOS lo pasa a la pantalla de detrás y la desplaza.
   el.addEventListener('touchmove', (e) => {
-    if (y0 == null) return;
+    const scrolls = el.scrollHeight > el.clientHeight;
+    if (y0 == null) { if (!scrolls) e.preventDefault(); return; }
     dy = Math.max(0, e.touches[0].clientY - y0);
+    if (dy > 0 || !scrolls) e.preventDefault();
     if (dy > 6) { el.style.transition = 'none'; el.style.transform = `translateY(${dy}px)`; }
-  }, { passive: true });
+  }, { passive: false });
   el.addEventListener('touchend', () => {
     if (y0 == null) return;
     y0 = null;
