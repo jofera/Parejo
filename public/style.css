@@ -40,7 +40,8 @@ h1, h2, h3, p { margin: 0; }
 [hidden] { display: none !important; }
 
 #app { max-width: 540px; margin: 0 auto; padding: 14px 16px calc(92px + env(safe-area-inset-bottom)); min-height: 100vh; }
-.view { display: grid; gap: 14px; animation: fade .18s ease; }
+/* minmax(0, 1fr): un nombre largo que no se parte (p. ej. una subtarea) no puede ensanchar la pantalla. */
+.view { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; animation: fade .18s ease; }
 @keyframes fade { from { opacity: 0; transform: translateY(4px); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
