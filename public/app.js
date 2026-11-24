@@ -441,7 +441,7 @@ function taskSheet(t) {
     const err = h('p', { class: 'err' });
     const dateIn = h('input', { type: 'date', value: yesterday, max: today, 'aria-label': 'Día', onchange: () => pick('otro') });
     const dateWrap = h('div', { hidden: true }, dateIn);
-    const timerBtn = h('button', { class: 'btn', onclick: () => { close(); startTimer(t, note.value); } }, '▶  Empezar cronómetro');
+    const timerBtn = h('button', { class: 'btn ghost', style: 'width:auto;padding:0 20px', onclick: () => { close(); startTimer(t, note.value); } }, '▶  Cronómetro');
     const chips = {};
     const pick = (mode) => {
       day = mode === 'hoy' ? today : mode === 'ayer' ? yesterday : (dateIn.value || yesterday);
@@ -492,10 +492,10 @@ function taskSheet(t) {
           big, small && ` ${small}`, m === t.default_min && h('small', null, 'habitual'));
       })),
       h('div', { class: 'two', style: 'grid-template-columns:1fr auto;margin-top:10px' },
-        custom, h('button', { class: 'btn ghost', style: 'width:auto;padding:0 20px', onclick: saveCustom }, 'Guardar')),
+        custom, timerBtn),
       err,
       details,
-      h('div', { class: 'stack' }, timerBtn),
+      h('div', { class: 'stack' }, h('button', { class: 'btn', onclick: saveCustom }, 'Guardar')),
     ];
   });
 }
