@@ -957,6 +957,20 @@ if ('serviceWorker' in navigator) {
   // no se recarga sola (podrías estar rellenando algo), se avisa para que lo decida la persona.
   const had = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (had && !S.update) { S.update = true; render(); } });
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  const reg = navigator.serviceWorker.register('/sw.js').catch(() => null);
+
+  // El navegador solo busca un service worker nuevo al abrir la app desde cero. Al volver a primer
+  // plano (o recuperar la red) se le pide que mire ya. Si el servidor no está al alcance (fuera de
+  // casa, sin VPN) la comprobación falla en segundo plano sin molestar y se repite la próxima vez.
+  let checking = false, lastCheck = 0;
+  const checkUpdate = async () => {
+    if (checking || S.update || Date.now() - lastCheck < 20_000) return;
+    checking = true; lastCheck = Date.now();
+    const giveUp = new Promise((resolve) => setTimeout(resolve, 15_000)); // red que no responde ni falla
+    try { await Promise.race([(await reg)?.update(), giveUp]); } catch { /* sin conexión con el servidor */ } finally { checking = false; }
+  };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
+  window.addEventListener('online', checkUpdate);
+  setInterval(() => { if (!document.hidden) checkUpdate(); }, 10 * 60_000);
 }
 start();
