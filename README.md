@@ -20,9 +20,10 @@ App para dos personas que registra el **tiempo** dedicado a las tareas del hogar
 - Ranking simple (semana, mes, año y total), más el desglose por tarea.
 - Cada persona edita solo sus registros (tarea, duración o día). Todo cambio exige un motivo y queda en un historial (cuándo, qué cambió y por qué). Eliminar es «borrado lógico».
 - La semana empieza en lunes.
+- **Avisos push**: cada móvil puede activar en *Más* un aviso cuando la otra persona apunta una tarea (necesita HTTPS; ver abajo).
 - Integración con Home Assistant (ver abajo): sensores, resumen semanal por notificación y registro desde NFC o botones.
 
-Fuera de esta versión: asignación automática de tareas, pesos por esfuerzo, varios hogares y notificaciones push propias.
+Fuera de esta versión: asignación automática de tareas, pesos por esfuerzo, y varios hogares.
 
 ## Instalación
 
@@ -77,8 +78,10 @@ Usa el `docker-compose.yml` del repositorio.
 | `TZ` | Zona horaria; determina cuándo empieza el día y la semana. |
 | `PORT` | Puerto (3000 por defecto). |
 | `DATA_DIR` | Carpeta de la base de datos (`./data` sin Docker, `/data` en la imagen). |
+| `PUSH` | `off` desactiva los avisos push. |
+| `PUSH_SUBJECT` | Contacto que se da a los servicios de push (`mailto:` o `https:`); por defecto uno genérico. |
 
-Los datos están en `reparto.db` (SQLite). **Copia de seguridad = copiar esa carpeta** (con la app parada, o los tres archivos `reparto.db*`). Con Docker, la carpeta del NAS debe poder escribirla el usuario 1000 (`sudo chown 1000:1000 data`).
+Los datos están en `reparto.db` (SQLite), y las claves de los avisos push en `vapid.json`. **Copia de seguridad = copiar esa carpeta** (con la app parada, o los tres archivos `reparto.db*`). Con Docker, la carpeta del NAS debe poder escribirla el usuario 1000 (`sudo chown 1000:1000 data`).
 
 ## Uso sin conexión y HTTPS
 
@@ -154,9 +157,18 @@ Fuera de casa, la IP privada solo se alcanza con una VPN. Sin ella, la app insta
 
 La sincronización en segundo plano con la app cerrada no está disponible en Safari ni Firefox, así que lo pendiente se envía al abrir la app o al recuperar la conexión.
 
+## Avisos push
+
+Con la app servida por HTTPS, cada persona puede pulsar **🔔 Activar avisos** en *Más*: a partir de ahí, ese móvil recibe una notificación cuando la otra persona apunta una tarea (con el botón rápido o al parar el cronómetro), por ejemplo «Ana apuntó una tarea · 🍳 Cocinar · 25 min». No se avisa de ediciones ni borrados, y el aviso sale unos segundos después de apuntar para no avisar de algo que se deshace al momento.
+
+- **iPhone**: iOS 16.4 o posterior y la app añadida a la pantalla de inicio (desde Safari, *Compartir → Añadir a pantalla de inicio*).
+- **Fuera de casa**: el servidor no habla con el móvil, entrega el aviso cifrado al servicio de push del navegador (Apple, Google o Mozilla), así que llega sin VPN. El servidor sí necesita salida a internet.
+- Las claves del servidor (`vapid.json`) se crean solas la primera vez en `DATA_DIR`. Si se pierden, hay que volver a activar los avisos en cada móvil.
+- Sin dependencias: la firma (RFC 8292) y el cifrado (RFC 8291) están en `src/push.js` con `node:crypto`.
+
 ## Home Assistant
 
-La carpeta [`homeassistant/`](homeassistant/README.md) trae todo lo necesario: sensores del balance, un panel, el resumen semanal por notificación con la app Companion (que sustituye a las push de la app, sin necesidad de HTTPS) y ejemplos para apuntar tareas con pegatinas NFC o botones.
+La carpeta [`homeassistant/`](homeassistant/README.md) trae todo lo necesario: sensores del balance, un panel, el resumen semanal por notificación con la app Companion (no necesita HTTPS) y ejemplos para apuntar tareas con pegatinas NFC o botones.
 
 ## Desarrollo
 

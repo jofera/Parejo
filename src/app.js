@@ -49,8 +49,8 @@ async function readBody(req) {
   }
 }
 
-export function createServer({ db, publicDir, now }) {
-  const api = createApi({ db, now });
+export function createServer({ db, publicDir, now, push }) {
+  const api = createApi({ db, now, push });
   const root = path.resolve(publicDir);
   const version = appVersion(root);
 

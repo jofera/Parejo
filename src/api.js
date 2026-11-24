@@ -22,7 +22,7 @@ const notFound = (m) => new HttpError(404, m);
 // cronómetro o si la persona las ha escrito; en el registro por duración, los registros "de otro
 // día" se colocan a mediodía de ese día y los de hoy terminan en el instante en que se guardan.
 // Cada registro puede llevar un comentario opcional (`note`).
-export function createApi({ db, now = () => Date.now() }) {
+export function createApi({ db, now = () => Date.now(), push = null }) {
   const get = (sql, ...p) => db.prepare(sql).get(...p);
   const all = (sql, ...p) => db.prepare(sql).all(...p);
   const run = (sql, ...p) => db.prepare(sql).run(...p);
@@ -287,6 +287,7 @@ export function createApi({ db, now = () => Date.now() }) {
     }
     if (note !== undefined && noteOf(note)) run('UPDATE entries SET end_ts = ?, note = ? WHERE id = ?', t, noteOf(note), a.id);
     else run('UPDATE entries SET end_ts = ? WHERE id = ?', t, a.id);
+    push?.entryDone(a.id);
     return { entry: entryOut(get(`${ENTRY_SQL} WHERE id = ?`, a.id)) };
   }
 
@@ -351,6 +352,7 @@ export function createApi({ db, now = () => Date.now() }) {
       `INSERT INTO entries (user_id, task_id, start_ts, end_ts, note, source, created_at, client_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       u.id, task.id, start, end, note, source, now(), cid,
     );
+    push?.entryDone(Number(r.lastInsertRowid));
     return { entry: entryOut(get(`${ENTRY_SQL} WHERE id = ?`, r.lastInsertRowid)) };
   });
 
@@ -457,6 +459,30 @@ export function createApi({ db, now = () => Date.now() }) {
     );
     return { ok: true };
   });
+
+  // ---- Avisos push ---------------------------------------------------------------------------
+  // Solo existen si el servidor tiene claves (ver src/push.js). Cada móvil se suscribe a nombre de
+  // quien lo usa y recibe un aviso cuando la otra persona apunta algo.
+  if (push) {
+    route('GET', '/api/push/key', () => ({ key: push.publicKey }));
+    route('POST', '/api/push/subscribe', (req, _q, body) => {
+      const u = me(req);
+      const s = body.subscription || {};
+      const endpoint = String(s.endpoint || '');
+      let url;
+      try { url = new URL(endpoint); } catch { url = null; }
+      if (!url || url.protocol !== 'https:' || endpoint.length > 1000) throw bad('Suscripción no válida');
+      const p256dh = String(s.keys?.p256dh || ''), auth = String(s.keys?.auth || '');
+      if (!/^[\w-]{80,100}$/.test(p256dh) || !/^[\w-]{16,32}$/.test(auth)) throw bad('Suscripción no válida');
+      push.subscribe(u.id, { endpoint, p256dh, auth });
+      return { ok: true };
+    });
+    route('POST', '/api/push/unsubscribe', (req, _q, body) => {
+      me(req);
+      push.unsubscribe(String(body.endpoint || ''));
+      return { ok: true };
+    });
+  }
 
   // ---- Tareas y personas ----------------------------------------------------------------------
   const taskFields = (body, current = {}) => {

@@ -161,7 +161,7 @@ test('mensaje semanal', () => {
   assert.match(weeklyMessage(users, { 1: 200 * 60000, 2: 100 * 60000 }), /Ana ha dedicado 1 h 40 min más/);
 });
 
-test('ya no existen las notificaciones push ni el registro con horas', async () => {
+test('sin claves de push no hay rutas de avisos; ya no existe el registro con horas', async () => {
   assert.equal((await call('GET', '/api/push/key', null)).status, 404);
   assert.equal((await call('POST', '/api/entries', 1, { task: 1, start: clock - 3600_000, end: clock })).status, 404);
 });

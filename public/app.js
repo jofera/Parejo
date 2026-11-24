@@ -861,11 +861,69 @@ async function moreView() {
       ordered.map(taskRow),
       h('button', { class: 'link', onclick: () => taskEditSheet(null) }, '＋ Nueva tarea'),
       archived.length > 0 && [h('h2', { style: 'margin-top:10px' }, 'Ocultas'), archived.map(taskRow)]),
+    await pushCard(),
     h('section', { class: 'card' }, h('h2', null, 'Personas'),
       h('div', { class: 'form' }, names,
         h('p', { class: 'hint' }, `Estás usando la app como ${me.name}.`),
-        h('button', { class: 'btn ghost', onclick: () => { store.del('me'); S.me = null; S.order = null; start(); } }, 'No soy yo: cambiar de persona'),
+        h('button', { class: 'btn ghost', onclick: async () => { await pushOff().catch(() => {}); store.del('me'); S.me = null; S.order = null; start(); } }, 'No soy yo: cambiar de persona'),
         ver && h('p', { class: 'hint ver' }, `Versión ${ver}${S.update ? ' · hay una nueva, recarga para usarla' : ''}`))));
+}
+
+/* ---------- avisos push ---------- */
+// Cada móvil se suscribe a nombre de quien lo usa; el servidor avisa cuando la otra persona apunta algo.
+// Requisitos: HTTPS y, en iPhone, la app añadida a la pantalla de inicio (iOS 16.4 o posterior).
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && window.isSecureContext;
+const isIos = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const pushSub = async () => (pushSupported() ? (await navigator.serviceWorker.ready).pushManager.getSubscription() : null);
+const keyBytes = (b64) => Uint8Array.from(atob(b64.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+
+async function pushOn() {
+  if (await Notification.requestPermission() !== 'granted') throw new Error('Sin permiso no se pueden mostrar avisos. Puedes darlo en los ajustes del móvil.');
+  const { key } = await api('/api/push/key');
+  const pm = (await navigator.serviceWorker.ready).pushManager;
+  let sub = await pm.getSubscription();
+  // Si el servidor cambió de claves, la suscripción vieja ya no sirve.
+  if (sub && sub.options?.applicationServerKey && btoa(String.fromCharCode(...new Uint8Array(sub.options.applicationServerKey))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') !== key) {
+    await sub.unsubscribe(); sub = null;
+  }
+  sub ||= await pm.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
+  await api('/api/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+}
+async function pushOff() {
+  const sub = await pushSub();
+  if (!sub) return;
+  await api('/api/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } }).catch(() => {});
+  await sub.unsubscribe();
+}
+// Al abrir la app se le recuerda al servidor la suscripción (por si cambió la persona o se perdió).
+async function pushResync() {
+  try { const sub = await pushSub(); if (sub) await api('/api/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } }); } catch { /* sin conexión: otra vez será */ }
+}
+
+async function pushCard() {
+  const card = (...kids) => h('section', { class: 'card' }, h('h2', null, 'Avisos'), h('div', { class: 'form' }, ...kids));
+  const o = other();
+  if (!pushSupported()) {
+    return card(h('p', { class: 'hint' }, !window.isSecureContext
+      ? 'Los avisos necesitan abrir la app por HTTPS.'
+      : isIos() && !navigator.standalone
+        ? 'Para recibir avisos en iPhone, añade Parejo a la pantalla de inicio (Compartir → «Añadir a pantalla de inicio») y ábrela desde ahí.'
+        : 'Este navegador no admite avisos.'));
+  }
+  let sub = null;
+  try { sub = await pushSub(); } catch { /* sin service worker todavía */ }
+  const toggle = (fn) => async (ev) => {
+    ev.target.disabled = true;
+    try { await fn(); } catch (e) { fail(e); } finally { render(); }
+  };
+  if (Notification.permission === 'denied') {
+    return card(h('p', { class: 'hint' }, 'Has bloqueado los avisos de Parejo. Para activarlos, permítelos en los ajustes del móvil.'));
+  }
+  return sub
+    ? card(h('p', { class: 'hint' }, `✓ Activados en este móvil: te avisa cuando ${o.name} apunta una tarea.`),
+      h('button', { class: 'btn ghost', onclick: toggle(pushOff) }, 'Desactivar avisos'))
+    : card(h('p', { class: 'hint' }, `Recibe un aviso en este móvil cuando ${o.name} apunte una tarea.`),
+      h('button', { class: 'btn', onclick: toggle(pushOn) }, '🔔 Activar avisos'));
 }
 
 /* ---------- estructura ---------- */
@@ -937,6 +995,7 @@ async function start() {
     return;
   }
   await render();
+  pushResync();
 }
 
 // Relojes en vivo y refresco periódico (también al volver a la app).

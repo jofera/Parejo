@@ -33,3 +33,26 @@ self.addEventListener('fetch', (e) => {
     }),
   );
 });
+
+// Avisos push: el servidor manda {title, body, tag}. Al tocarlo se abre (o se trae al frente) la app.
+self.addEventListener('push', (e) => {
+  let m = {};
+  try { m = e.data ? e.data.json() : {}; } catch { m = { body: e.data?.text() }; }
+  e.waitUntil(self.registration.showNotification(m.title || 'Parejo', {
+    body: m.body || '',
+    tag: m.tag,
+    icon: '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+    data: { url: '/' },
+  }));
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      const open = list.find((c) => new URL(c.url).origin === location.origin);
+      return open ? open.focus() : self.clients.openWindow(e.notification.data?.url || '/');
+    }),
+  );
+});
