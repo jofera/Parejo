@@ -15,7 +15,7 @@ App para dos personas que registra el **tiempo** dedicado a las tareas del hogar
 - Opcional, en «Más detalles»: un **comentario** (cena, lasaña…; la app sugiere los que más usas en cada tarea) y la **hora de inicio y de fin** exactas.
 - **Grupos de tareas**: una tarea puede tener subtareas (p. ej. «Ropa» → poner la lavadora, tender, recoger, doblar, planchar). Se apunta siempre en la subtarea; el ranking suma por grupo y detalla cada parte. Se crean desde *Más → Tareas* eligiendo «Dentro de».
 - **Sin conexión**: si el móvil no llega al servidor, lo que apuntas (también con cronómetro) se guarda en el móvil, se ve marcado como pendiente y se envía solo al volver la conexión o al reabrir la app, sin duplicados. La última pantalla queda guardada para consultarla. Para que la app *abra* sin conexión hace falta servirla por HTTPS (ver abajo).
-- Balance de la semana siempre visible en la pantalla de inicio.
+- Reparto del día en la pantalla de inicio; el de cada semana, en el historial.
 - Historial por semanas, meses y años, con el detalle de cada periodo.
 - Ranking simple (semana, mes, año y total), más el desglose por tarea.
 - Cada persona edita solo sus registros (tarea, duración o día). Todo cambio exige un motivo y queda en un historial (cuándo, qué cambió y por qué). Eliminar es «borrado lógico».

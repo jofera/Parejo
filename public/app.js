@@ -224,11 +224,11 @@ function pendingEntries() {
   });
 }
 
-function weekTotals() {
-  const totals = { ...S.week.totals };
-  for (const p of pendingEntries()) {
-    if (p.start >= S.week.from && p.start < S.week.to) totals[p.user_id] = (totals[p.user_id] || 0) + (p.end - p.start);
-  }
+// Lo terminado hoy, incluido lo pendiente de enviar.
+const todayDone = () => [...pendingEntries().filter((p) => p.start >= midnight()), ...S.today.filter((e) => e.end)];
+function todayTotals() {
+  const totals = {};
+  for (const e of todayDone()) totals[e.user_id] = (totals[e.user_id] || 0) + (e.end - e.start);
   return totals;
 }
 
@@ -256,16 +256,15 @@ async function flush() {
 // Copia de la última pantalla para poder consultarla sin conexión.
 function saveSnapshot() {
   S.snapAt = Date.now();
-  store.set('snap', JSON.stringify({ me: S.me, at: S.snapAt, users: S.users, tasks: S.tasks, notes: S.notes, settings: S.settings, week: S.week, today: S.today, active: S.active.filter((a) => a.user_id === S.me) }));
+  store.set('snap', JSON.stringify({ me: S.me, at: S.snapAt, users: S.users, tasks: S.tasks, notes: S.notes, settings: S.settings, today: S.today, active: S.active.filter((a) => a.user_id === S.me) }));
 }
 function loadSnapshot() {
   try {
     const snap = JSON.parse(store.get('snap') || 'null');
     if (!snap || snap.me !== S.me) return false;
-    Object.assign(S, { users: snap.users, tasks: snap.tasks, notes: snap.notes, settings: snap.settings, week: snap.week, active: snap.active, snapAt: snap.at });
+    Object.assign(S, { users: snap.users, tasks: snap.tasks, notes: snap.notes, settings: snap.settings, active: snap.active, snapAt: snap.at });
     S.order = S.tasks.map((t) => t.id);
     S.today = snap.today.filter((e) => e.start >= midnight());
-    if (S.week.to <= Date.now()) S.week = { ...S.week, from: S.week.to, to: S.week.to + 7 * 864e5, totals: {} }; // la semana guardada ya terminó
     return true;
   } catch { return false; }
 }
@@ -273,9 +272,8 @@ function loadSnapshot() {
 /* ---------- datos ---------- */
 async function refresh() {
   const from = midnight();
-  const [b, week, today] = await Promise.all([
+  const [b, today] = await Promise.all([
     api('/api/bootstrap'),
-    api('/api/summary?period=week'),
     api(`/api/entries?from=${from}&to=${Date.now() + 36e5}`),
   ]);
   S.skew = b.now - Date.now();
@@ -286,7 +284,6 @@ async function refresh() {
   if (!S.order) S.order = b.tasks.map((t) => t.id); // el orden por uso solo cambia al abrir la app
   const pos = (t) => { const i = S.order.indexOf(t.id); return i < 0 ? 1e9 + t.id : i; };
   S.tasks = [...b.tasks].sort((x, y) => pos(x) - pos(y));
-  S.week = week;
   S.today = today.entries;
   S.offline = false;
   saveSnapshot();
@@ -341,7 +338,7 @@ function whoLine(totals) {
 
 function verdict(totals) {
   const mine = totals[S.me] || 0, theirs = totals[other().id] || 0, tot = mine + theirs;
-  if (!tot) return 'Todavía no hay nada apuntado esta semana';
+  if (!tot) return 'Todavía no hay nada apuntado hoy';
   if (Math.abs(mine - theirs) / tot <= S.settings.balanced) return 'Estáis equilibrados 👌';
   return mine > theirs ? `Vas ${fmtDur(mine - theirs)} por delante` : `${other().name} va ${fmtDur(theirs - mine)} por delante`;
 }
@@ -664,7 +661,8 @@ function homeView() {
     ? { task_id: S.local.task, start: S.local.start }
     : stopPending ? null : S.active.find((a) => a.user_id === S.me);
   const theirs = S.offline ? null : S.active.find((a) => a.user_id === o.id);
-  const totals = weekTotals();
+  const done = todayDone();
+  const totals = todayTotals();
 
   const nodes = [
     h('div', { class: 'top' }, h('h1', null, `Hola, ${me.name}`), h('span', { class: 'sub' }, new Intl.DateTimeFormat('es-ES', { weekday: 'long', day: 'numeric', month: 'short' }).format(Date.now()))),
@@ -683,8 +681,9 @@ function homeView() {
     nodes.push(h('p', { class: 'partner' }, `${o.name} está con ${t.emoji} ${fullName(t)} (desde hace `, h('span', { 'data-since': theirs.start }, fmtDur(serverNow() - theirs.start)), ')'));
   }
 
+  // El reparto del día; el de la semana está en Historial.
   nodes.push(h('section', { class: 'card' },
-    h('h2', null, 'Esta semana'),
+    h('h2', null, 'Reparto de hoy'),
     splitBar(totals), whoLine(totals), h('div', { class: 'verdict' }, verdict(totals))));
 
   nodes.push(h('section', null,
@@ -694,9 +693,8 @@ function homeView() {
         ? h('button', { class: 'tile', onclick: () => groupSheet(t) }, h('span', { class: 'em' }, t.emoji), t.name, h('small', { class: 'grp' }, `${liveChildren(t).length} partes ▸`))
         : h('button', { class: 'tile', onclick: () => taskSheet(t) }, h('span', { class: 'em' }, t.emoji), t.name)))));
 
-  const done = [...pendingEntries().filter((p) => p.start >= midnight()), ...S.today.filter((e) => e.end)];
   nodes.push(h('section', { class: 'card' },
-    h('h2', null, 'Hoy'),
+    h('h2', null, 'Apuntado hoy'),
     done.length ? done.map((e) => entryRow(e)) : h('p', { class: 'empty-note' }, 'Aún no hay nada apuntado hoy.')));
 
   return h('div', { class: 'view' }, nodes);
